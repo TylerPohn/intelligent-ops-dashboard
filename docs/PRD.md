@@ -61,18 +61,20 @@ iops-dashboard/
 
 ### Framework
 - **Vite + React + TypeScript**
+- **Material-UI (MUI v5)** for component library and theming
 - **TanStack Query v5** (`@tanstack/react-query`)
 - **Recharts** for analytics visualization
 - **Axios** for API communication
 
 ### Key Components
-- **Dashboard** (main view): Displays KPIs, charts, and live feed.
-- **AlertsFeed**: Streams EventBridge / SNS messages in real time.
-- **ExplainabilityPanel**: Expands AI reasoning per alert.
-- **Settings / Auth Modal**: Accepts JWT or API key for company integration.
+- **Dashboard** (main view): Displays KPIs, charts, and live feed using MUI Grid and Paper components.
+- **AlertsFeed**: Streams EventBridge / SNS messages in real time with MUI List and ListItem.
+- **ExplainabilityPanel**: Expands AI reasoning per alert using MUI Accordion or Dialog.
+- **Settings / Auth Modal**: Accepts JWT or API key for company integration using MUI Dialog and TextField.
 
 ### Example Dependencies
 ```bash
+npm install @mui/material @mui/icons-material @emotion/react @emotion/styled
 npm install @tanstack/react-query @tanstack/react-query-devtools axios recharts
 ```
 

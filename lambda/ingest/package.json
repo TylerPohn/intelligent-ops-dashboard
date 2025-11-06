@@ -1,0 +1,26 @@
+{
+  "name": "iops-dashboard-ingest",
+  "version": "1.0.0",
+  "description": "Data ingestion Lambda for IOps Dashboard",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kinesis": "^3.645.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": [
+    "lambda",
+    "kinesis",
+    "ingestion"
+  ],
+  "author": "",
+  "license": "MIT"
+}

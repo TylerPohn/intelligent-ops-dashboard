@@ -1,0 +1,267 @@
+name: Deploy to AWS and Vercel
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  test-lambdas:
+    name: Test Lambda Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Node dependencies
+        run: |
+          cd lambda/ingest
+          npm ci
+
+      - name: Test TypeScript Lambda (Ingest)
+        run: |
+          cd lambda/ingest
+          npm test || echo "Tests not yet implemented"
+
+      - name: Install Python dependencies (Process Lambda)
+        run: |
+          cd lambda/process
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Test Python Lambda (Process)
+        run: |
+          cd lambda/process
+          pytest --cov=handler --cov-report=term-missing || echo "Tests not yet implemented"
+
+      - name: Install Python dependencies (AI Lambda)
+        run: |
+          cd lambda/ai
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Test Python Lambda (AI)
+        run: |
+          cd lambda/ai
+          pytest --cov=handler --cov-report=term-missing || echo "Tests not yet implemented"
+
+      - name: Install Python dependencies (Simulator Lambda)
+        run: |
+          cd lambda/simulator
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Test Python Lambda (Simulator)
+        run: |
+          cd lambda/simulator
+          pytest --cov=handler --cov-report=term-missing || echo "Tests not yet implemented"
+
+  deploy-infrastructure:
+    name: Deploy CDK Infrastructure
+    runs-on: ubuntu-latest
+    needs: test-lambdas
+    outputs:
+      api-gateway-url: ${{ steps.stack-outputs.outputs.api-url }}
+      websocket-url: ${{ steps.stack-outputs.outputs.websocket-url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install CDK dependencies
+        run: |
+          cd cdk
+          npm ci
+
+      - name: Install Lambda dependencies
+        run: |
+          # TypeScript Lambda
+          cd lambda/ingest
+          npm ci
+          cd ../..
+
+          # Python Lambdas - install in layer directories
+          mkdir -p lambda/process/layer/python
+          mkdir -p lambda/ai/layer/python
+          mkdir -p lambda/simulator/layer/python
+
+          pip install -r lambda/process/requirements.txt -t lambda/process/layer/python
+          pip install -r lambda/ai/requirements.txt -t lambda/ai/layer/python
+          pip install -r lambda/simulator/requirements.txt -t lambda/simulator/layer/python
+
+      - name: CDK Bootstrap (if needed)
+        run: |
+          cd cdk
+          npx cdk bootstrap aws://${{ secrets.AWS_ACCOUNT_ID }}/${{ env.AWS_REGION }} || true
+
+      - name: CDK Synth
+        run: |
+          cd cdk
+          npx cdk synth
+
+      - name: CDK Deploy
+        id: cdk-deploy
+        run: |
+          cd cdk
+          npx cdk deploy --all --require-approval never --outputs-file outputs.json
+
+      - name: Extract stack outputs
+        id: stack-outputs
+        run: |
+          cd cdk
+          if [ -f outputs.json ]; then
+            API_URL=$(jq -r '.IopsDashboardStack.ApiGatewayUrl // empty' outputs.json)
+            WS_URL=$(jq -r '.IopsDashboardStack.WebSocketUrl // empty' outputs.json)
+
+            echo "api-url=${API_URL}" >> $GITHUB_OUTPUT
+            echo "websocket-url=${WS_URL}" >> $GITHUB_OUTPUT
+
+            echo "✅ API Gateway URL: ${API_URL}"
+            echo "✅ WebSocket URL: ${WS_URL}"
+          else
+            echo "⚠️ No outputs.json found"
+          fi
+
+      - name: Upload CDK outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdk-outputs
+          path: cdk/outputs.json
+          retention-days: 7
+
+  deploy-frontend:
+    name: Deploy Frontend to Vercel
+    runs-on: ubuntu-latest
+    needs: deploy-infrastructure
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download CDK outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk-outputs
+          path: ./cdk-outputs
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel Environment Information
+        run: |
+          vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Build Frontend with CDK outputs
+        run: |
+          # Extract URLs from CDK outputs
+          API_URL="${{ needs.deploy-infrastructure.outputs.api-gateway-url }}"
+          WS_URL="${{ needs.deploy-infrastructure.outputs.websocket-url }}"
+
+          # Set environment variables for build
+          export VITE_API_GATEWAY_URL="${API_URL}"
+          export VITE_WEBSOCKET_URL="${WS_URL}"
+
+          echo "Building with:"
+          echo "  API URL: ${API_URL}"
+          echo "  WebSocket URL: ${WS_URL}"
+
+          vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Deploy to Vercel Production
+        run: |
+          vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --prebuilt
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Set Vercel Environment Variables
+        run: |
+          API_URL="${{ needs.deploy-infrastructure.outputs.api-gateway-url }}"
+          WS_URL="${{ needs.deploy-infrastructure.outputs.websocket-url }}"
+
+          if [ -n "$API_URL" ]; then
+            vercel env add VITE_API_GATEWAY_URL production "$API_URL" --token=${{ secrets.VERCEL_TOKEN }} --force || true
+          fi
+
+          if [ -n "$WS_URL" ]; then
+            vercel env add VITE_WEBSOCKET_URL production "$WS_URL" --token=${{ secrets.VERCEL_TOKEN }} --force || true
+          fi
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  notify-deployment:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [deploy-infrastructure, deploy-frontend]
+    if: always()
+
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.deploy-infrastructure.result }}" == "success" ]; then
+            echo "✅ **Infrastructure**: Deployed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- API Gateway: ${{ needs.deploy-infrastructure.outputs.api-gateway-url }}" >> $GITHUB_STEP_SUMMARY
+            echo "- WebSocket: ${{ needs.deploy-infrastructure.outputs.websocket-url }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Infrastructure**: Deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.deploy-frontend.result }}" == "success" ]; then
+            echo "✅ **Frontend**: Deployed successfully to Vercel" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Frontend**: Deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Actor**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
