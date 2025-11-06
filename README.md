@@ -2,10 +2,34 @@
 
 Real-time InfiniBand Operations Monitoring Dashboard with AI-powered insights and predictive analytics.
 
+## What This Does (Plain English)
+
+This dashboard monitors InfiniBand network switches as a POC (high-speed data center networking) and uses machine learning to predict problems before they cause outages. It will soon be adapted to tutoring data. 
+
+**How it works:**
+1. Your InfiniBand switches send telemetry data (speed, errors, latency) to our API
+2. AWS SageMaker ML models analyze the data using 25 different performance indicators
+3. The system predicts risk scores (0-100) and generates actionable recommendations
+4. If risk is high (≥80), you get an email alert immediately
+5. Everything shows up in a real-time web dashboard that updates every 5 seconds
+
+**What you see:**
+- Live alerts with color-coded severity (green/yellow/red)
+- AI-generated explanations of what's wrong
+- Specific recommendations to fix issues
+- Which ML model made the prediction (SageMaker XGBoost or Claude AI)
+- Confidence scores so you know how sure the AI is
+
+**Why this matters:**
+- Catch performance problems before users notice
+- Get intelligent explanations, not just raw numbers
+- Reduce downtime with predictive maintenance
+- No need to manually monitor hundreds of metrics
+
 ## Features
 
 - 🔥 **Real-time Monitoring**: HTTP polling-based updates every 5 seconds
-- 🤖 **AI-Powered Insights**: Claude 3.5 Haiku for predictive analytics
+- 🤖 **AI-Powered Insights**: AWS SageMaker XGBoost ML models with Bedrock Claude fallback
 - 📊 **Multi-Stream Support**: Handle 50+ concurrent InfiniBand data streams
 - ⚡ **High Performance**: Lambda-based serverless architecture
 - 🎨 **Modern UI**: React + Material-UI + TanStack Query
@@ -41,17 +65,17 @@ npm run dev
 ### Generate Test Data
 
 ```bash
-# Quick test (50 insights from 10 streams)
+# Quick test (10 insights)
 npm run generate:quick
 
-# Demo showcase (600 insights from 60 streams)
-npm run generate:demo
+# Default (30 insights)
+npm run generate:insights
 
-# Large volume (2000 insights from 100 streams)
+# Medium volume (50 insights)
+npm run generate:medium
+
+# Large volume (100 insights)
 npm run generate:large
-
-# Maximum scale (10,000 insights from 200 streams)
-npm run generate:showcase
 ```
 
 ### Deploy to AWS
@@ -69,11 +93,21 @@ npm run deploy
 ## Architecture
 
 ```
-Kinesis Stream → Process Lambda → DynamoDB → API Gateway → Dashboard
-                      ↓
-                 AI Lambda (Claude)
-                      ↓
-                  Insights
+InfiniBand Telemetry → API Gateway → Ingest Lambda → Kinesis Stream
+                                                           ↓
+                                                    Process Lambda
+                                                           ↓
+                                                       DynamoDB
+                                                           ↓
+Manual Scripts ────────────────────────────→ AI Lambda (SageMaker ML)
+                                                           ↓
+                                                    DynamoDB (insights)
+                                                           ↓
+                                                    EventBridge (risk ≥ 80)
+                                                           ↓
+                                                      SNS → Email
+
+Dashboard ← API Gateway ← API Lambda ← DynamoDB
 ```
 
 ### Components
@@ -81,10 +115,11 @@ Kinesis Stream → Process Lambda → DynamoDB → API Gateway → Dashboard
 - **Frontend**: React + Vite + Material-UI
 - **API**: API Gateway + Lambda (TypeScript)
 - **Database**: DynamoDB with GSI for insights
-- **AI**: AWS Bedrock with Claude 3.5 Haiku
+- **ML Models**: AWS SageMaker XGBoost (iops-classifier-lite, iops-regressor-lite)
+- **AI Fallback**: AWS Bedrock with Claude 3.5 Haiku
 - **Streaming**: Kinesis Data Streams
 - **Events**: EventBridge for alerts
-- **Notifications**: SNS for critical alerts
+- **Notifications**: SNS for critical alerts (risk ≥ 80)
 
 ## Project Structure
 
@@ -111,8 +146,11 @@ iops-dashboard/
 │   │   └── experience-stack.ts  # WebSocket (legacy)
 │   └── bin/cdk.ts
 ├── scripts/
-│   ├── generate-test-events.sh  # High-volume test generator
-│   └── README.md
+│   ├── simple-generate.sh       # Simple ML insights generator
+│   ├── generate-quick.sh        # 10 insights
+│   ├── generate-medium.sh       # 50 insights
+│   ├── generate-large.sh        # 100 insights
+│   └── generate-test-events.sh  # High-volume test generator
 ├── docs/                 # Documentation
 │   ├── POLLING-SOLUTION.md
 │   ├── NPM-SCRIPTS.md
@@ -131,10 +169,10 @@ iops-dashboard/
 - `npm run deploy` - Deploy to AWS via CDK
 
 ### Test Data Generation
-- `npm run generate:quick` - 50 insights (fast)
-- `npm run generate:demo` - 600 insights (showcase)
-- `npm run generate:large` - 2000 insights (load test)
-- `npm run generate:showcase` - 10,000 insights (maximum scale)
+- `npm run generate:quick` - 10 insights (fast)
+- `npm run generate:insights` - 30 insights (default)
+- `npm run generate:medium` - 50 insights (moderate)
+- `npm run generate:large` - 100 insights (comprehensive)
 
 See [docs/NPM-SCRIPTS.md](docs/NPM-SCRIPTS.md) for full reference.
 
@@ -162,7 +200,7 @@ See [docs/NPM-SCRIPTS.md](docs/NPM-SCRIPTS.md) for full reference.
       "Check switch port utilization",
       "Review network topology changes"
     ],
-    "model_used": "claude-3-5-haiku",
+    "model_used": "iops-classifier-lite",
     "confidence": 0.92
   }
 ]
@@ -215,10 +253,10 @@ See [docs/NPM-SCRIPTS.md](docs/NPM-SCRIPTS.md) for full reference.
 - **Total**: ~$15-20/month for single dashboard
 
 ### Per Test Data Generation
-- **Quick** (50 insights): $0.000063
-- **Demo** (600 insights): $0.00075
-- **Large** (2,000 insights): $0.0025
-- **Showcase** (10,000 insights): $0.0125
+- **Quick** (10 insights): ~$0.01 (SageMaker inference)
+- **Default** (30 insights): ~$0.03
+- **Medium** (50 insights): ~$0.05
+- **Large** (100 insights): ~$0.10
 
 ## Configuration
 
@@ -237,6 +275,13 @@ VITE_AWS_REGION=us-east-2
 - **DynamoDB Table**: iops-dashboard-metrics
 - **Kinesis Stream**: iops-dashboard-events
 - **EventBridge Bus**: iops-dashboard-alerts
+- **SageMaker Endpoints**:
+  - iops-classifier-lite (XGBoost classification)
+  - iops-regressor-lite (XGBoost regression)
+- **SNS Topics**:
+  - iops-dashboard-critical-alerts (risk ≥ 80)
+  - iops-dashboard-warning-alerts
+  - iops-dashboard-info-alerts
 
 ## Monitoring
 
@@ -297,10 +342,26 @@ aws sts get-caller-identity
 
 ## Development
 
+### ML Model Workflow
+
+**Triple-Fallback Architecture:**
+1. **Primary**: AWS SageMaker XGBoost models (25 engineered features)
+2. **Fallback**: AWS Bedrock Claude 3.5 Haiku (if SageMaker fails)
+3. **Last Resort**: Rules-based analysis (if both fail)
+
+**SageMaker Models:**
+- **Classifier** (`iops-classifier-lite`): Categorical risk (0, 1, 2, 3) → scaled to 0-100
+- **Regressor** (`iops-regressor-lite`): Continuous risk score (currently unused)
+
+**Feature Engineering:**
+- Converts 8 raw IOPS metrics → 25 engineered features
+- Features include: IOPS patterns, latency distribution, error trends, capacity utilization
+- CSV format required for SageMaker XGBoost inference
+
 ### Adding New Prediction Types
 
-1. Update `lambda/ai/handler.py` with new detection logic
-2. Add to `scripts/generate-test-events.sh` prediction types
+1. Update `src/lambda/ai-analysis/handler.py` with new detection logic
+2. Add to `scripts/generate-quick.sh` prediction types
 3. Update risk score calculations
 4. Add recommendations for the new type
 
@@ -357,8 +418,34 @@ For issues and questions:
 - Review CloudWatch logs
 - Test with `npm run generate:quick`
 
+## ML Insights Generation
+
+The system uses AWS SageMaker for production ML inference:
+
+```bash
+# Generate ML insights using SageMaker
+npm run generate:quick   # 10 real ML predictions
+
+# Each insight includes:
+# - 25-feature engineering from 8 raw metrics
+# - SageMaker XGBoost classification
+# - Risk score (0-100 scale)
+# - Confidence score (0.95 for SageMaker)
+# - Actionable recommendations
+# - EventBridge alerts for risk ≥ 80
+```
+
+### ML Pipeline
+
+1. **Input**: 8 raw IOPS metrics (IOPS, latency, error rate, throughput, queue depth, connections)
+2. **Feature Engineering**: Transform to 25 features (handler.py:32-106)
+3. **SageMaker Inference**: XGBoost classification via `iops-classifier-lite`
+4. **Output**: Risk score, analysis, recommendations
+5. **Storage**: Write to DynamoDB
+6. **Alerting**: Trigger EventBridge/SNS if risk ≥ 80
+
 ---
 
-**Last Updated**: November 5, 2025
+**Last Updated**: November 6, 2025
 **Version**: 1.0.0
 **Region**: us-east-2 (Ohio)
