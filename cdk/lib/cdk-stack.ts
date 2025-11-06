@@ -268,9 +268,10 @@ export class CdkStack extends cdk.Stack {
       fifo: false,
     });
 
-    // NOTE: Email subscriptions removed from CDK to avoid pending confirmation issues
-    // Add subscriptions manually via AWS Console or CLI:
-    // aws sns subscribe --topic-arn <ARN> --protocol email --notification-endpoint your-email@example.com
+    // Add email subscription for tylerpohn@gmail.com
+    this.riskAlertTopic.addSubscription(
+      new subscriptions.EmailSubscription('tylerpohn@gmail.com')
+    );
 
     // Create EventBridge rule for high-risk alerts (risk >= 80)
     const highRiskRule = new events.Rule(this, 'HighRiskAlertRule', {
