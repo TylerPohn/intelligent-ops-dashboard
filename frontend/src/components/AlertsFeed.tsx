@@ -76,9 +76,12 @@ export default function AlertsFeed() {
             onChange={handleFilterChange}
           >
             <MenuItem value="all">All Alerts</MenuItem>
-            <MenuItem value="high_ib_call_frequency">High IB Calls</MenuItem>
-            <MenuItem value="low_health_score">Low Health Score</MenuItem>
-            <MenuItem value="supply_demand_imbalance">Supply/Demand</MenuItem>
+            <MenuItem value="customer_health">Customer Health</MenuItem>
+            <MenuItem value="churn_risk">Churn Risk</MenuItem>
+            <MenuItem value="session_quality">Session Quality</MenuItem>
+            <MenuItem value="marketplace_balance">Supply/Demand</MenuItem>
+            <MenuItem value="tutor_capacity">Tutor Capacity</MenuItem>
+            <MenuItem value="first_session_success">First Session Success</MenuItem>
           </Select>
         </FormControl>
       </Box>
