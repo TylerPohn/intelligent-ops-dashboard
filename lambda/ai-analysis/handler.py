@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Dict, List, Any, Optional
 
 # Initialize AWS clients
-sagemaker_runtime = boto3.client('sagemaker-runtime', region_name='us-east-1')
+sagemaker_runtime = boto3.client('sagemaker-runtime', region_name='us-east-2')
 dynamodb = boto3.resource('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-2'))
 cloudwatch = boto3.client('cloudwatch', region_name=os.environ.get('AWS_REGION', 'us-east-2'))
 

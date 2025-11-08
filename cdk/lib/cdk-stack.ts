@@ -346,9 +346,10 @@ export class CdkStack extends cdk.Stack {
         MODEL_TYPE: 'tensorflow_multi_task',
         BATCH_SIZE: '100',
         EVENT_BUS_NAME: this.eventBus.eventBusName,
+        DEPLOYMENT_TIMESTAMP: '2025-11-08T05:30:00Z',
       },
       timeout: cdk.Duration.minutes(5),
-      memorySize: 1024,
+      memorySize: 1536,
       description: 'AI inference with TensorFlow multi-task marketplace health model (46 features → 5 predictions)',
     });
 
@@ -370,7 +371,7 @@ export class CdkStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: ['sagemaker:InvokeEndpoint'],
       resources: [
-        `arn:aws:sagemaker:us-east-1:${this.account}:endpoint/marketplace-health-endpoint`,
+        `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/marketplace-health-endpoint`,
         // Keep old endpoint for backward compatibility during transition
         `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/iops-classifier-lite`,
       ],
