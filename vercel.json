@@ -5,22 +5,6 @@
   "installCommand": "cd frontend && npm install",
   "framework": null,
   "devCommand": "cd frontend && npm run dev",
-  "env": {
-    "VITE_API_URL": "@iops-api-url",
-    "VITE_WS_URL": "@iops-ws-url"
-  },
-  "build": {
-    "env": {
-      "VITE_API_URL": "@iops-api-url",
-      "VITE_WS_URL": "@iops-ws-url"
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "$VITE_API_URL/api/:path*"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

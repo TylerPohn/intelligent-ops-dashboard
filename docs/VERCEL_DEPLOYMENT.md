@@ -18,28 +18,39 @@ Before deploying, you need to set up environment variables in Vercel:
 
 ### Required Environment Variables
 
-1. **VITE_API_URL** - Your API Gateway URL
-   - Example: `https://your-api-id.execute-api.us-east-1.amazonaws.com/prod`
-   - Get this from your AWS CDK deployment output
+Based on the current system architecture (using Server-Sent Events for real-time updates):
 
-2. **VITE_WS_URL** - Your WebSocket URL
-   - Example: `wss://your-ws-id.execute-api.us-east-1.amazonaws.com/prod`
+1. **VITE_API_URL** - Your API Gateway REST API URL
+   - Example: `https://uwnig53hbd.execute-api.us-east-2.amazonaws.com/prod`
    - Get this from your AWS CDK deployment output
+   - Used for: API calls to `/insights/recent`, `/metrics`, etc.
+
+2. **VITE_SSE_URL** - Your Server-Sent Events URL (optional)
+   - Example: `https://uwnig53hbd.execute-api.us-east-2.amazonaws.com/prod/stream`
+   - Get this from your AWS CDK deployment output
+   - Used for: Real-time streaming updates (currently using polling)
+
+3. **VITE_AWS_REGION** - AWS Region (optional)
+   - Example: `us-east-2`
+   - Default: `us-east-2`
+   - Used for: AWS SDK configuration
 
 ### Setting Environment Variables
 
 #### Via Vercel CLI:
 ```bash
 vercel env add VITE_API_URL
-vercel env add VITE_WS_URL
+vercel env add VITE_SSE_URL
+vercel env add VITE_AWS_REGION
 ```
 
 #### Via Vercel Dashboard:
 1. Go to your project settings
 2. Navigate to "Environment Variables"
 3. Add the following variables:
-   - `VITE_API_URL` - Your API URL
-   - `VITE_WS_URL` - Your WebSocket URL
+   - `VITE_API_URL` - Your REST API Gateway URL (required)
+   - `VITE_SSE_URL` - Your Server-Sent Events URL (optional)
+   - `VITE_AWS_REGION` - Your AWS region (optional, defaults to us-east-2)
 
 ## Deployment Steps
 
@@ -137,11 +148,12 @@ vercel env ls
 vercel env pull
 ```
 
-#### API/WebSocket Connection Issues
-1. Verify environment variables are set correctly
-2. Check CORS settings on API Gateway
-3. Ensure WebSocket route is properly configured
-4. Check browser console for detailed errors
+#### API Connection Issues
+1. Verify `VITE_API_URL` environment variable is set correctly
+2. Check CORS settings on API Gateway (must allow your Vercel domain)
+3. Verify API Gateway is deployed and accessible
+4. Check browser console for detailed errors (Network tab)
+5. Test API directly: `curl https://your-api.execute-api.us-east-2.amazonaws.com/prod/insights/recent?limit=10`
 
 ### Update Environment Variables
 
@@ -150,9 +162,36 @@ vercel env pull
 vercel env rm VITE_API_URL production
 vercel env add VITE_API_URL production
 
+# Update SSE URL (optional)
+vercel env rm VITE_SSE_URL production
+vercel env add VITE_SSE_URL production
+
+# Update AWS region (optional)
+vercel env rm VITE_AWS_REGION production
+vercel env add VITE_AWS_REGION production
+
 # Trigger redeployment after env change
 vercel --prod
 ```
+
+### Getting Your API URL from CDK Deployment
+
+After deploying your CDK stack:
+
+```bash
+# From project root
+cd cdk
+npm run deploy
+
+# Look for output like:
+# ✅  IOpsDashboard-CoreStack
+#
+# Outputs:
+# IOpsDashboard-CoreStack.ApiEndpoint = https://uwnig53hbd.execute-api.us-east-2.amazonaws.com/prod
+# IOpsDashboard-CoreStack.SSEEndpoint = https://uwnig53hbd.execute-api.us-east-2.amazonaws.com/prod/stream
+```
+
+Use the `ApiEndpoint` value for `VITE_API_URL` and `SSEEndpoint` for `VITE_SSE_URL`.
 
 ## Performance Optimization
 
