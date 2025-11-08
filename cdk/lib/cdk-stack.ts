@@ -11,6 +11,11 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatch_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as kinesis from 'aws-cdk-lib/aws-kinesis';
+import * as kinesisfirehose from 'aws-cdk-lib/aws-kinesisfirehose';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import { KinesisEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { StartingPosition } from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 
 export class CdkStack extends cdk.Stack {
@@ -18,6 +23,9 @@ export class CdkStack extends cdk.Stack {
   public readonly metricsTable: dynamodb.Table;
   public readonly eventBus: events.EventBus;
   public readonly riskAlertTopic: sns.Topic;
+  public readonly eventsStream: kinesis.Stream;
+  public readonly malformedDataTopic: sns.Topic;
+  public readonly archiveBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -52,19 +60,131 @@ export class CdkStack extends cdk.Stack {
     // Grant DynamoDB permissions to execution role
     this.metricsTable.grantReadWriteData(this.lambdaExecutionRole);
 
-    // Create Ingestion Lambda (TypeScript) - Direct DynamoDB writes
+    // ========================================
+    // Kinesis Data Stream for Event-Driven Architecture
+    // ========================================
+
+    // Create Kinesis Data Stream with encryption and auto-scaling
+    this.eventsStream = new kinesis.Stream(this, 'EventsStream', {
+      streamName: 'iops-dashboard-events-stream',
+      shardCount: 2, // Initial capacity: 2 MB/s write, 4 MB/s read
+      retentionPeriod: cdk.Duration.hours(24), // 24-hour replay capability
+      encryption: kinesis.StreamEncryption.MANAGED,
+      streamMode: kinesis.StreamMode.PROVISIONED, // Use provisioned for auto-scaling
+    });
+
+    // Grant Kinesis permissions to execution role
+    this.eventsStream.grantReadWrite(this.lambdaExecutionRole);
+
+    // ========================================
+    // S3 Bucket for Data Archive (Kinesis Firehose destination)
+    // ========================================
+
+    this.archiveBucket = new s3.Bucket(this, 'ArchiveBucket', {
+      bucketName: `iops-dashboard-archive-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: false,
+      lifecycleRules: [
+        {
+          id: 'TransitionToIA',
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(30),
+            },
+            {
+              storageClass: s3.StorageClass.GLACIER,
+              transitionAfter: cdk.Duration.days(90),
+            },
+          ],
+          expiration: cdk.Duration.days(365), // Delete after 1 year
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data on stack deletion
+    });
+
+    // ========================================
+    // SNS Topic for Malformed Data Alerts
+    // ========================================
+
+    this.malformedDataTopic = new sns.Topic(this, 'MalformedDataTopic', {
+      topicName: 'iops-dashboard-malformed-events',
+      displayName: 'IOps Dashboard Malformed Data Alerts',
+      fifo: false,
+    });
+
+    // Add email subscription for malformed data
+    this.malformedDataTopic.addSubscription(
+      new subscriptions.EmailSubscription('tylerpohn@gmail.com')
+    );
+
+    // ========================================
+    // S3 Archive Bucket (Stream Processor will write directly)
+    // ========================================
+    // Note: Removed Firehose due to IAM propagation timing issues.
+    // Stream Processor Lambda now writes directly to S3 for archival.
+
+    // ========================================
+    // Stream Processor Lambda for Kinesis → DynamoDB
+    // ========================================
+
+    const streamProcessorLambda = new lambda.Function(this, 'StreamProcessorFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'dist/index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/stream-processor')),
+      role: this.lambdaExecutionRole,
+      environment: {
+        DYNAMODB_TABLE_NAME: this.metricsTable.tableName,
+        MALFORMED_DATA_TOPIC_ARN: this.malformedDataTopic.topicArn,
+        ARCHIVE_BUCKET_NAME: this.archiveBucket.bucketName,
+      },
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      description: 'Processes Kinesis stream events with validation, batch writes to DynamoDB, and S3 archival',
+      reservedConcurrentExecutions: 50, // 50 concurrent executions for stream processing
+    });
+
+    // Grant SNS publish permissions for malformed data notifications
+    this.malformedDataTopic.grantPublish(streamProcessorLambda);
+
+    // Grant S3 write permissions for archival
+    this.archiveBucket.grantWrite(streamProcessorLambda);
+
+    // Create DLQ for Stream Processor failures
+    const streamProcessorDLQ = new sqs.Queue(this, 'StreamProcessorDLQ', {
+      queueName: 'iops-dashboard-stream-processor-dlq',
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    // Add Kinesis event source to Stream Processor
+    streamProcessorLambda.addEventSource(
+      new KinesisEventSource(this.eventsStream, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 100, // Process up to 100 records per batch
+        maxBatchingWindow: cdk.Duration.seconds(5), // Wait up to 5 seconds to fill batch
+        bisectBatchOnError: true, // Split batch on error for better error isolation
+        retryAttempts: 3, // Retry failed batches 3 times
+        parallelizationFactor: 10, // Process up to 10 batches per shard in parallel
+        onFailure: new SqsDlq(streamProcessorDLQ),
+      })
+    );
+
+    // Create Ingestion Lambda (TypeScript) - Writes to Kinesis
     const ingestLambda = new lambda.Function(this, 'IngestFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/ingest/dist')),
       role: this.lambdaExecutionRole,
       environment: {
-        DYNAMODB_TABLE_NAME: this.metricsTable.tableName,
+        KINESIS_STREAM_NAME: this.eventsStream.streamName,
+        DYNAMODB_TABLE_NAME: this.metricsTable.tableName, // Fallback for feature flag
         EVENT_BUS_NAME: 'default', // Will be updated to custom bus
+        USE_KINESIS: 'true', // Feature flag to enable Kinesis path
       },
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
-      description: 'Ingests metrics and writes directly to DynamoDB with pattern detection (TypeScript)',
+      description: 'Ingests metrics and writes to Kinesis stream (TypeScript)',
       reservedConcurrentExecutions: 100, // Support 200 streams at 0.5% capacity
     });
 
@@ -195,11 +315,21 @@ export class CdkStack extends cdk.Stack {
       resources: ['*'], // Will be scoped to custom event bus
     }));
 
-    // Create AI Inference Lambda (Python) - SageMaker + Bedrock + Rules fallback
+    // ========================================
+    // EventBridge Event Bus (create BEFORE AI Lambda)
+    // ========================================
+
+    // Create custom EventBridge event bus for alerts
+    this.eventBus = new events.EventBus(this, 'AlertEventBus', {
+      eventBusName: 'iops-dashboard-alerts',
+      description: 'Event bus for routing IOps Dashboard risk-based alerts',
+    });
+
+    // Create AI Inference Lambda (Python) - TensorFlow Multi-Task Marketplace Health Model
     const aiLambda = new lambda.Function(this, 'AIFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'handler.lambda_handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../src/lambda/ai-analysis'), {
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/ai-analysis'), {
         bundling: {
           image: lambda.Runtime.PYTHON_3_12.bundlingImage,
           command: [
@@ -210,15 +340,16 @@ export class CdkStack extends cdk.Stack {
       }),
       role: this.lambdaExecutionRole,
       environment: {
-        INSIGHTS_TABLE: this.metricsTable.tableName,
-        USE_SAGEMAKER: 'true',
-        SAGEMAKER_ENDPOINT: 'iops-classifier-lite',
-        SAGEMAKER_REGRESSOR_ENDPOINT: 'iops-regressor-lite',
-        EVENT_BUS_NAME: 'default', // Will be updated to custom bus
+        DYNAMODB_TABLE_NAME: this.metricsTable.tableName,
+        SAGEMAKER_ENDPOINT_NAME: 'marketplace-health-endpoint',
+        MODEL_VERSION: 'marketplace-health-v1',
+        MODEL_TYPE: 'tensorflow_multi_task',
+        BATCH_SIZE: '100',
+        EVENT_BUS_NAME: this.eventBus.eventBusName,
       },
-      timeout: cdk.Duration.seconds(60),
+      timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
-      description: 'AI inference with SageMaker ML + Bedrock + Rules fallback (Python)',
+      description: 'AI inference with TensorFlow multi-task marketplace health model (46 features → 5 predictions)',
     });
 
     // Grant Bedrock permissions to AI lambda (both standard and streaming)
@@ -239,20 +370,35 @@ export class CdkStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: ['sagemaker:InvokeEndpoint'],
       resources: [
+        `arn:aws:sagemaker:us-east-1:${this.account}:endpoint/marketplace-health-endpoint`,
+        // Keep old endpoint for backward compatibility during transition
         `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/iops-classifier-lite`,
-        `arn:aws:sagemaker:${this.region}:${this.account}:endpoint/iops-regressor-lite`,
       ],
     }));
 
-    // ========================================
-    // EventBridge + SNS Risk-Based Alerts System
-    // ========================================
+    // Grant CloudWatch permissions to AI lambda for publishing metrics
+    aiLambda.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+    }));
 
-    // Create custom EventBridge event bus for alerts
-    this.eventBus = new events.EventBus(this, 'AlertEventBus', {
-      eventBusName: 'iops-dashboard-alerts',
-      description: 'Event bus for routing IOps Dashboard risk-based alerts',
+    // Schedule AI Lambda to run every 5 minutes for prediction refresh
+    const aiRefreshRule = new events.Rule(this, 'AIRefreshRule', {
+      ruleName: 'iops-dashboard-ai-prediction-refresh',
+      description: 'Trigger AI Lambda every 5 minutes to refresh customer health predictions',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      enabled: true,
     });
+
+    aiRefreshRule.addTarget(new targets.LambdaFunction(aiLambda, {
+      retryAttempts: 2,
+      maxEventAge: cdk.Duration.minutes(10),
+    }));
+
+    // ========================================
+    // SNS Risk-Based Alerts System
+    // ========================================
 
     // Create Dead Letter Queue for failed notifications
     const alertDLQ = new sqs.Queue(this, 'AlertDLQ', {
@@ -348,6 +494,64 @@ export class CdkStack extends cdk.Stack {
 
     aiErrorAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
 
+    // ========================================
+    // Marketplace Health Prediction Alarms
+    // ========================================
+
+    // High churn risk alarm
+    const highChurnAlarm = new cloudwatch.Alarm(this, 'HighChurnRateAlarm', {
+      alarmName: 'iops-dashboard-high-churn-rate',
+      alarmDescription: 'Alert when 10+ customers have >70% churn risk within 14 days',
+      metric: new cloudwatch.Metric({
+        namespace: 'IOpsDashboard/Predictions',
+        metricName: 'HighChurnRiskCount',
+        statistic: 'Maximum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 10,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+    });
+
+    highChurnAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
+    // Low average health score alarm
+    const lowHealthAlarm = new cloudwatch.Alarm(this, 'LowHealthScoreAlarm', {
+      alarmName: 'iops-dashboard-low-health-average',
+      alarmDescription: 'Alert when average customer health score drops below 60',
+      metric: new cloudwatch.Metric({
+        namespace: 'IOpsDashboard/Predictions',
+        metricName: 'AverageHealthScore',
+        statistic: 'Average',
+        period: cdk.Duration.minutes(15),
+      }),
+      threshold: 60,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+    });
+
+    lowHealthAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
+    // At-risk customer count alarm
+    const atRiskCustomersAlarm = new cloudwatch.Alarm(this, 'AtRiskCustomersAlarm', {
+      alarmName: 'iops-dashboard-at-risk-customers-high',
+      alarmDescription: 'Alert when at-risk customer count exceeds 25% of total',
+      metric: new cloudwatch.Metric({
+        namespace: 'IOpsDashboard/Predictions',
+        metricName: 'AtRiskCustomers',
+        statistic: 'Maximum',
+        period: cdk.Duration.minutes(15),
+      }),
+      threshold: 50, // Alert if 50+ customers are at-risk
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+    });
+
+    atRiskCustomersAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
     // DynamoDB consumed read capacity alarm (cost monitoring)
     const dynamoReadCapacityAlarm = new cloudwatch.Alarm(this, 'DynamoDBReadCapacityAlarm', {
       alarmName: 'iops-dashboard-dynamodb-high-read-capacity',
@@ -439,6 +643,104 @@ export class CdkStack extends cdk.Stack {
     ingestDurationAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
 
     // ========================================
+    // Kinesis CloudWatch Alarms
+    // ========================================
+
+    // Kinesis iterator age alarm (processing lag)
+    const kinesisIteratorAgeAlarm = new cloudwatch.Alarm(this, 'KinesisIteratorAgeAlarm', {
+      alarmName: 'iops-dashboard-kinesis-iterator-age',
+      alarmDescription: 'Alert when Kinesis stream processing lags behind (iterator age > 60 seconds)',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/Kinesis',
+        metricName: 'GetRecords.IteratorAgeMilliseconds',
+        dimensionsMap: {
+          StreamName: this.eventsStream.streamName,
+        },
+        period: cdk.Duration.minutes(1),
+        statistic: 'Maximum',
+      }),
+      threshold: 60000, // 60 seconds in milliseconds
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    });
+
+    kinesisIteratorAgeAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
+    // Kinesis write throughput exceeded alarm
+    const kinesisWriteThroughputAlarm = new cloudwatch.Alarm(this, 'KinesisWriteThroughputAlarm', {
+      alarmName: 'iops-dashboard-kinesis-write-throughput-exceeded',
+      alarmDescription: 'Alert when Kinesis write throughput exceeds provisioned capacity',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/Kinesis',
+        metricName: 'WriteProvisionedThroughputExceeded',
+        dimensionsMap: {
+          StreamName: this.eventsStream.streamName,
+        },
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 10, // More than 10 throttled requests in 5 minutes
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    });
+
+    kinesisWriteThroughputAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
+    // Stream Processor Lambda error rate alarm
+    const streamProcessorErrorAlarm = new cloudwatch.Alarm(this, 'StreamProcessorErrorAlarm', {
+      alarmName: 'iops-dashboard-stream-processor-errors',
+      alarmDescription: 'Alert when Stream Processor Lambda has high error rate',
+      metric: streamProcessorLambda.metricErrors({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 10, // 10 errors per 5 minutes
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    });
+
+    streamProcessorErrorAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.riskAlertTopic));
+
+    // Malformed data rate alarm (custom metric - to be implemented in Lambda)
+    const malformedDataRateAlarm = new cloudwatch.Alarm(this, 'MalformedDataRateAlarm', {
+      alarmName: 'iops-dashboard-malformed-data-rate',
+      alarmDescription: 'Alert when malformed data rate exceeds 5% of total events',
+      metric: new cloudwatch.MathExpression({
+        expression: '(malformed / total) * 100',
+        usingMetrics: {
+          malformed: new cloudwatch.Metric({
+            namespace: 'IOpsDashboard',
+            metricName: 'MalformedEvents',
+            dimensionsMap: {
+              StreamProcessor: 'validation',
+            },
+            period: cdk.Duration.minutes(5),
+            statistic: 'Sum',
+          }),
+          total: new cloudwatch.Metric({
+            namespace: 'IOpsDashboard',
+            metricName: 'TotalEvents',
+            dimensionsMap: {
+              StreamProcessor: 'validation',
+            },
+            period: cdk.Duration.minutes(5),
+            statistic: 'Sum',
+          }),
+        },
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 5, // 5% malformed data rate
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+    });
+
+    malformedDataRateAlarm.addAlarmAction(new cloudwatch_actions.SnsAction(this.malformedDataTopic));
+
+    // ========================================
     // Stack Outputs
     // ========================================
 
@@ -524,10 +826,41 @@ export class CdkStack extends cdk.Stack {
       exportName: 'IOpsDashboard-AlertDLQArn',
     });
 
+    // Kinesis Resources
+    new cdk.CfnOutput(this, 'KinesisStreamName', {
+      value: this.eventsStream.streamName,
+      description: 'Kinesis Data Stream name for event ingestion',
+      exportName: 'IOpsDashboard-KinesisStreamName',
+    });
+
+    new cdk.CfnOutput(this, 'KinesisStreamArn', {
+      value: this.eventsStream.streamArn,
+      description: 'Kinesis Data Stream ARN',
+      exportName: 'IOpsDashboard-KinesisStreamArn',
+    });
+
+    new cdk.CfnOutput(this, 'ArchiveBucketName', {
+      value: this.archiveBucket.bucketName,
+      description: 'S3 bucket for archived events',
+      exportName: 'IOpsDashboard-ArchiveBucketName',
+    });
+
+    new cdk.CfnOutput(this, 'MalformedDataTopicArn', {
+      value: this.malformedDataTopic.topicArn,
+      description: 'SNS topic ARN for malformed data alerts',
+      exportName: 'IOpsDashboard-MalformedDataTopicArn',
+    });
+
+    new cdk.CfnOutput(this, 'StreamProcessorFunctionName', {
+      value: streamProcessorLambda.functionName,
+      description: 'Stream Processor Lambda function name',
+      exportName: 'IOpsDashboard-StreamProcessorFunctionName',
+    });
+
     // Architecture Summary
     new cdk.CfnOutput(this, 'ArchitectureSummary', {
-      value: 'API Gateway /metrics → Ingest Lambda → DynamoDB → AI Lambda (Bedrock) → EventBridge (risk>=80) → SNS',
-      description: 'Simplified architecture: No Kinesis, direct DynamoDB writes, risk-based alerts',
+      value: 'API Gateway → Ingest Lambda → Kinesis Stream → Stream Processor → DynamoDB | Firehose → S3 Archive',
+      description: 'Event-driven architecture with Kinesis buffering, validation, and archival',
     });
   }
 }
