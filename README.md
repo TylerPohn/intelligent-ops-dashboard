@@ -437,12 +437,51 @@ npm run generate:quick   # 10 real ML predictions
 
 ### ML Pipeline
 
-1. **Input**: 8 raw IOPS metrics (IOPS, latency, error rate, throughput, queue depth, connections)
-2. **Feature Engineering**: Transform to 25 features (handler.py:32-106)
-3. **SageMaker Inference**: XGBoost classification via `iops-classifier-lite`
-4. **Output**: Risk score, analysis, recommendations
-5. **Storage**: Write to DynamoDB
-6. **Alerting**: Trigger EventBridge/SNS if risk ≥ 80
+1. **Input**: 46 engineered features from student/session metrics
+2. **Feature Engineering**: Transform raw metrics to ML-ready features (handler.py:22-145)
+3. **SageMaker Inference**: TensorFlow multi-task model via `marketplace-health-endpoint`
+4. **Output**: 5 predictions from multi-task model
+5. **Insight Generation**: Create 3-6 insight records per student
+6. **Storage**: Write insights to DynamoDB
+7. **Alerting**: Trigger EventBridge/SNS if risk ≥ 80
+
+### SageMaker Model Output Format
+
+The TensorFlow multi-task model returns **JSON with 5 float predictions**:
+
+**Input to SageMaker:**
+```csv
+# CSV string with 46 engineered features
+"0.5,1.2,3.4,2.1,..."
+```
+
+**Raw SageMaker Response:**
+```json
+{
+  "predictions": [[0.65, 1.8, 0.32, 0.45, 72.5]]
+}
+```
+
+**Parsed Predictions (5 values):**
+```python
+{
+    'first_session_success': 0.65,    # Probability (0-1)
+    'session_velocity': 1.8,           # Sessions per week
+    'churn_risk_14d': 0.32,           # Probability (0-1)
+    'churn_risk_30d': 0.45,           # Probability (0-1)
+    'health_score': 72.5              # Score (0-100)
+}
+```
+
+**Generated Insights (6 types from 5 predictions):**
+- `churn_risk` - When churn probability > 30%
+- `customer_health` - When health score < 70
+- `session_quality` - When session velocity < 0.5/week
+- `first_session_success` - When first session probability < 60%
+- `tutor_capacity` - Always generated for capacity planning
+- `marketplace_balance` - Always generated for aggregate analysis
+
+Each student generates 3-6 insights depending on their prediction values. The AI Lambda runs every 1 minute via EventBridge to refresh predictions.
 
 ---
 

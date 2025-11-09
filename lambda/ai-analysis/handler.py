@@ -250,6 +250,151 @@ def generate_recommendations(metrics: Dict[str, Any], predictions: Dict[str, flo
 
     return recommendations[:5]  # Return top 5 recommendations
 
+def create_insights_from_predictions(
+    entity_id: str,
+    predictions: Dict[str, float],
+    segment: str,
+    recommendations: List[str],
+    metrics: Dict[str, Any]
+) -> None:
+    """
+    Create insight records in DynamoDB from SageMaker predictions.
+    Generates 3-6 insight types based on prediction thresholds.
+    """
+    import random
+    import time
+
+    timestamp = datetime.utcnow()
+    timestamp_iso = timestamp.isoformat()
+    ttl = int((timestamp + timedelta(days=30)).timestamp())
+
+    insights_to_create = []
+
+    # 1. Churn Risk Insight - if 14d or 30d risk > 30%
+    max_churn = max(predictions['churn_risk_14d'], predictions['churn_risk_30d'])
+    if max_churn > 0.3:
+        risk_score = int(max_churn * 100)
+        explanation = f"Student shows {risk_score}% churn probability. "
+        if predictions['churn_risk_14d'] > 0.5:
+            explanation += "High risk of churning within 14 days. "
+        elif predictions['churn_risk_30d'] > 0.5:
+            explanation += "Elevated risk of churning within 30 days. "
+        explanation += f"Session velocity: {predictions['session_velocity']:.2f}/week, Health score: {predictions['health_score']:.0f}/100."
+
+        insights_to_create.append({
+            'prediction_type': 'churn_risk',
+            'risk_score': risk_score,
+            'explanation': explanation,
+            'confidence': 0.85
+        })
+
+    # 2. Customer Health Insight - if health score < 70
+    if predictions['health_score'] < 70:
+        risk_score = int(100 - predictions['health_score'])
+        explanation = f"Overall health score of {predictions['health_score']:.0f}/100 indicates {segment} status. "
+        explanation += f"Session frequency: {predictions['session_velocity']:.2f}/week. "
+        if metrics.get('avg_rating', 0) < 4.0:
+            explanation += "Low satisfaction ratings detected. "
+
+        insights_to_create.append({
+            'prediction_type': 'customer_health',
+            'risk_score': risk_score,
+            'explanation': explanation,
+            'confidence': 0.88
+        })
+
+    # 3. Session Quality Insight - if session velocity < 0.5/week
+    if predictions['session_velocity'] < 0.5:
+        risk_score = int((0.5 - predictions['session_velocity']) * 200)  # Scale to 0-100
+        risk_score = min(risk_score, 100)
+        explanation = f"Low session booking rate of {predictions['session_velocity']:.2f} sessions/week. "
+        days_since = metrics.get('days_since_last_session', 0)
+        explanation += f"Last session {days_since:.0f} days ago. "
+
+        insights_to_create.append({
+            'prediction_type': 'session_quality',
+            'risk_score': risk_score,
+            'explanation': explanation,
+            'confidence': 0.82
+        })
+
+    # 4. First Session Success Insight - if probability < 60%
+    if predictions['first_session_success'] < 0.6:
+        risk_score = int((1 - predictions['first_session_success']) * 100)
+        explanation = f"First session success probability: {predictions['first_session_success']:.0%}. "
+        explanation += "Student may need additional onboarding support or tutor matching optimization."
+
+        insights_to_create.append({
+            'prediction_type': 'first_session_success',
+            'risk_score': risk_score,
+            'explanation': explanation,
+            'confidence': 0.79
+        })
+
+    # 5. Tutor Capacity Insight - always generate for capacity planning
+    capacity_score = int(predictions['session_velocity'] * 20)  # Scale velocity to capacity metric
+    capacity_score = min(capacity_score, 100)
+    explanation = f"Current session velocity: {predictions['session_velocity']:.2f}/week. "
+    if predictions['session_velocity'] > 2.0:
+        explanation += "High engagement - ensure tutor availability matches demand."
+    elif predictions['session_velocity'] < 0.5:
+        explanation += "Low engagement - may need tutor outreach or scheduling flexibility."
+    else:
+        explanation += "Moderate engagement - monitor for changes."
+
+    insights_to_create.append({
+        'prediction_type': 'tutor_capacity',
+        'risk_score': 100 - capacity_score,  # Invert so high velocity = low risk
+        'explanation': explanation,
+        'confidence': 0.75
+    })
+
+    # 6. Marketplace Balance - aggregate student patterns
+    balance_score = int(predictions['health_score'])
+    explanation = f"Student health: {predictions['health_score']:.0f}/100, Segment: {segment}. "
+    explanation += f"Churn risk: {max_churn:.0%}, Session velocity: {predictions['session_velocity']:.2f}/week."
+
+    insights_to_create.append({
+        'prediction_type': 'marketplace_balance',
+        'risk_score': 100 - balance_score,
+        'explanation': explanation,
+        'confidence': 0.80
+    })
+
+    # Write all insights to DynamoDB
+    for insight_data in insights_to_create:
+        # Generate unique insight ID
+        random_suffix = ''.join(random.choices('0123456789abcdef', k=8))
+        insight_id = f"insight_{int(time.time() * 1000)}_{random_suffix}"
+
+        # Convert recommendations list to DynamoDB format
+        recs_list = [{'S': rec} for rec in recommendations[:3]]  # Limit to 3 recommendations
+
+        try:
+            # Use low-level client for explicit attribute types
+            dynamodb_client = boto3.client('dynamodb', region_name=os.environ.get('AWS_REGION', 'us-east-2'))
+
+            dynamodb_client.put_item(
+                TableName=TABLE_NAME,
+                Item={
+                    'entity_id': {'S': insight_id},
+                    'entity_type': {'S': 'insight'},
+                    'timestamp': {'S': timestamp_iso},
+                    'related_entity': {'S': entity_id},
+                    'prediction_type': {'S': insight_data['prediction_type']},
+                    'risk_score': {'N': str(insight_data['risk_score'])},
+                    'explanation': {'S': insight_data['explanation']},
+                    'recommendations': {'L': recs_list},
+                    'model_used': {'S': MODEL_VERSION},
+                    'confidence': {'N': str(insight_data['confidence'])},
+                    'ttl': {'N': str(ttl)}
+                }
+            )
+            print(f"✅ Created insight: {insight_data['prediction_type']} for {entity_id} (risk: {insight_data['risk_score']})")
+
+        except Exception as e:
+            print(f"❌ Failed to create {insight_data['prediction_type']} insight for {entity_id}: {e}")
+
 def update_customer_predictions(entity_id: str, entity_type: str, metrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Process single customer and update DynamoDB with predictions"""
     try:
@@ -299,6 +444,9 @@ def update_customer_predictions(entity_id: str, entity_type: str, metrics: Dict[
         )
 
         print(f"✅ Updated predictions for {entity_id}: segment={segment}, churn_14d={predictions['churn_risk_14d']:.2%}, health={predictions['health_score']:.1f}")
+
+        # Create insight records from predictions
+        create_insights_from_predictions(entity_id, predictions, segment, recommendations, metrics)
 
         return {
             'entity_id': entity_id,
