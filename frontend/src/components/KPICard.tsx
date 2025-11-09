@@ -8,6 +8,7 @@ interface KPICardProps {
   unit?: string;
   trend?: 'up' | 'down' | 'neutral';
   trendValue?: string;
+  subtitle?: string;
   icon?: React.ReactNode;
   color?: 'primary' | 'secondary' | 'success' | 'warning' | 'error' | 'info';
 }
@@ -18,6 +19,7 @@ export default function KPICard({
   unit = '',
   trend = 'neutral',
   trendValue,
+  subtitle,
   icon,
   color = 'primary',
 }: KPICardProps) {
@@ -150,6 +152,12 @@ export default function KPICard({
             </Typography>
           )}
         </Box>
+
+        {subtitle && (
+          <Typography variant="body2" color="text.secondary">
+            {subtitle}
+          </Typography>
+        )}
 
         {trendValue && trend !== 'neutral' && (
           <Box

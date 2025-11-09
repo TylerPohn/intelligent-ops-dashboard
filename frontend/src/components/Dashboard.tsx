@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { Container, Box, Typography, AppBar, Toolbar, Grid, Paper } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
@@ -16,7 +16,7 @@ import PeopleIcon from '@mui/icons-material/People';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import { usePolling } from '../hooks/usePolling';
 import { insightsAPI, getTimeRangeISO } from '../api/client';
-import type { Insight, TimeRange, Aggregations } from '../api/client';
+import type { Insight, TimeRange } from '../api/client';
 
 const darkTheme = createTheme({
   palette: {
@@ -62,12 +62,9 @@ export default function Dashboard() {
   // Query 2: Paginated insights for display (using infinite query for virtual scroll support)
   const {
     data: insightsData,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ['insights', 'items', timeRange],
-    queryFn: ({ pageParam }) => insightsAPI.getRecentWithFilters({
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) => insightsAPI.getRecentWithFilters({
       limit: 100,
       since: getTimeRangeISO(timeRange),
       nextToken: pageParam,
@@ -75,11 +72,11 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000, // 5 minute cache
     refetchInterval: false, // Disable automatic refetch - let polling handle it
     getNextPageParam: (lastPage) => lastPage.nextToken,
-    initialPageParam: undefined,
+    initialPageParam: undefined as string | undefined,
   });
 
   // Get latest timestamp from cached data for incremental polling
-  const latestTimestamp = insightsData?.pages?.[0]?.items?.[0]?.timestamp;
+  const latestTimestamp = (insightsData?.pages?.[0] as { items: Insight[] } | undefined)?.items?.[0]?.timestamp;
 
   // Smart polling: only fetch NEW insights since latest timestamp
   const { status } = usePolling({
@@ -89,10 +86,12 @@ export default function Dashboard() {
     interval: 10000, // Poll every 10 seconds
     invalidateQueries: [], // Don't invalidate - we'll manually update cache
     onData: (data) => {
-      console.log('Polling: Received', data?.items?.length || data?.length || 0, 'new insights');
+      const typedData = data as { items?: Insight[] } | Insight[] | undefined;
+      const itemsLength = Array.isArray(typedData) ? typedData.length : (typedData?.items?.length || 0);
+      console.log('Polling: Received', itemsLength, 'new insights');
       setLastMessageTime(new Date());
 
-      const newInsights = Array.isArray(data) ? data : (data?.items || []);
+      const newInsights = Array.isArray(data) ? data : ((data as { items?: Insight[] })?.items || []);
 
       if (newInsights.length > 0) {
         // Manual cache update: PREPEND new insights without invalidating
@@ -103,7 +102,7 @@ export default function Dashboard() {
               return { pages: [{ items: newInsights, nextToken: undefined }], pageParams: [undefined] };
             }
 
-            const firstPage = old.pages[0] || { items: [], nextToken: undefined };
+            const firstPage = (old.pages[0] as { items: Insight[]; nextToken?: string }) || { items: [], nextToken: undefined };
             const existingItems = Array.isArray(firstPage.items) ? firstPage.items : [];
 
             // Merge new insights with existing first page (keep max 100 per page)
@@ -140,7 +139,7 @@ export default function Dashboard() {
   });
 
   // Flatten all pages for KPI calculation fallback (if aggregations not loaded yet)
-  const allInsights = insightsData?.pages?.flatMap((page) => page.items) || [];
+  const allInsights = insightsData?.pages?.flatMap((page: { items: Insight[] }) => page.items) || [];
 
   // Use aggregations for KPIs if available, otherwise calculate from loaded items
   const totalAlerts = aggregations?.total ?? allInsights.length;

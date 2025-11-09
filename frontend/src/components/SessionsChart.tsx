@@ -18,7 +18,7 @@ interface InsightTrendsChartProps {
   aggregations?: Aggregations;
 }
 
-export default function InsightTrendsChart({ insights, loading = false, aggregations }: InsightTrendsChartProps) {
+export default function InsightTrendsChart({ insights, loading = false }: InsightTrendsChartProps) {
   // Sort insights by timestamp to get distribution
   const sortedInsights = [...insights].sort((a, b) =>
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()

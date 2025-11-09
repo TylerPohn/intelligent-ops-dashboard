@@ -51,7 +51,7 @@ export default function AlertsFeed({ timeRange }: AlertsFeedProps) {
     error,
   } = useInfiniteQuery({
     queryKey: ['insights', 'items', timeRange],
-    queryFn: ({ pageParam }) => insightsAPI.getRecentWithFilters({
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) => insightsAPI.getRecentWithFilters({
       limit: 100,
       since: getTimeRangeISO(timeRange),
       nextToken: pageParam,
@@ -59,12 +59,12 @@ export default function AlertsFeed({ timeRange }: AlertsFeedProps) {
     staleTime: 5 * 60 * 1000,
     refetchInterval: false,
     getNextPageParam: (lastPage) => lastPage.nextToken,
-    initialPageParam: undefined,
+    initialPageParam: undefined as string | undefined,
   });
 
   // Flatten all pages
   const allInsights = useMemo(
-    () => insightsData?.pages.flatMap((page) => page.items) || [],
+    () => insightsData?.pages.flatMap((page: { items: Insight[] }) => page.items) || [],
     [insightsData]
   );
 
