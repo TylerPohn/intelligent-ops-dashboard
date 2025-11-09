@@ -277,11 +277,14 @@ def update_customer_predictions(entity_id: str, entity_type: str, metrics: Dict[
                     first_session_success_prob = :fss,
                     session_velocity = :sv,
                     health_score = :hs,
-                    segment = :seg,
+                    #seg = :seg,
                     model_version = :mv,
                     prediction_timestamp = :pts,
                     recommendations = :rec
             ''',
+            ExpressionAttributeNames={
+                '#seg': 'segment'
+            },
             ExpressionAttributeValues={
                 ':c14': Decimal(str(round(predictions['churn_risk_14d'], 4))),
                 ':c30': Decimal(str(round(predictions['churn_risk_30d'], 4))),

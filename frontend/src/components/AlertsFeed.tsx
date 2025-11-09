@@ -20,6 +20,9 @@ import {
   Button,
   Divider,
   Stack,
+  Fade,
+  Grow,
+  Skeleton,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import WarningIcon from '@mui/icons-material/Warning';
@@ -87,47 +90,84 @@ export default function AlertsFeed() {
       </Box>
 
       {isLoading ? (
-        <Typography color="text.secondary">Loading alerts...</Typography>
+        <Stack spacing={2}>
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Skeleton key={i} variant="rectangular" height={80} sx={{ borderRadius: 2 }} />
+          ))}
+        </Stack>
       ) : (
         <List sx={{ maxHeight: 600, overflow: 'auto' }}>
           {filteredInsights && filteredInsights.length > 0 ? (
             filteredInsights.map((alert, index) => (
-              <Box key={alert.alert_id}>
-                {index > 0 && <Divider />}
-                <ListItem disablePadding>
-                  <ListItemButton onClick={() => setSelectedAlert(alert)}>
-                    <ListItemText
-                      primary={
-                        <Box display="flex" alignItems="center" gap={1} mb={1}>
-                          <Chip
-                            label={alert.risk_score}
-                            color={getSeverityColor(alert.risk_score)}
-                            size="small"
-                          />
-                          <Typography variant="body2" color="text.secondary">
-                            {new Date(alert.timestamp).toLocaleTimeString()}
-                          </Typography>
-                        </Box>
-                      }
-                      secondary={
-                        <Box>
-                          <Typography variant="subtitle2" color="text.primary" gutterBottom>
-                            {alert.entity_id}
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {alert.explanation.substring(0, 100)}...
-                          </Typography>
-                        </Box>
-                      }
-                    />
-                  </ListItemButton>
-                </ListItem>
-              </Box>
+              <Grow
+                key={alert.alert_id}
+                in={true}
+                timeout={300 + index * 50}
+                style={{ transformOrigin: '0 0 0' }}
+              >
+                <Box>
+                  {index > 0 && <Divider />}
+                  <ListItem
+                    disablePadding
+                    sx={{
+                      position: 'relative',
+                      '&::before': alert.risk_score >= 80 ? {
+                        content: '""',
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: 4,
+                        bgcolor: 'error.main',
+                        borderRadius: '0 4px 4px 0',
+                        animation: alert.risk_score >= 85 ? 'pulse 2s ease-in-out infinite' : 'none',
+                        '@keyframes pulse': {
+                          '0%, 100%': { opacity: 1 },
+                          '50%': { opacity: 0.5 },
+                        },
+                      } : {},
+                    }}
+                  >
+                    <ListItemButton onClick={() => setSelectedAlert(alert)}>
+                      <ListItemText
+                        primary={
+                          <Box display="flex" alignItems="center" gap={1} mb={1}>
+                            <Chip
+                              label={alert.risk_score}
+                              color={getSeverityColor(alert.risk_score)}
+                              size="small"
+                              sx={{
+                                fontWeight: 700,
+                                minWidth: 45,
+                              }}
+                            />
+                            <Typography variant="body2" color="text.secondary">
+                              {new Date(alert.timestamp).toLocaleTimeString()}
+                            </Typography>
+                          </Box>
+                        }
+                        secondary={
+                          <Box>
+                            <Typography variant="subtitle2" color="text.primary" gutterBottom>
+                              {alert.entity_id}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              {alert.explanation.substring(0, 100)}...
+                            </Typography>
+                          </Box>
+                        }
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                </Box>
+              </Grow>
             ))
           ) : (
-            <Typography color="text.secondary" sx={{ p: 2 }}>
-              No alerts to display
-            </Typography>
+            <Fade in={true} timeout={500}>
+              <Typography color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+                No alerts to display
+              </Typography>
+            </Fade>
           )}
         </List>
       )}

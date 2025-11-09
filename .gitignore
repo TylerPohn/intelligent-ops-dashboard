@@ -99,6 +99,7 @@ lambda/*/__pycache__/
 lambda/*/bin/
 lambda/*/build/
 lambda/*/layers/
+lambda/ai-analysis/package/
 
 # Claude Flow generated files
 .claude/settings.local.json

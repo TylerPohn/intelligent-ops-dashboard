@@ -384,11 +384,11 @@ export class CdkStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // Schedule AI Lambda to run every 5 minutes for prediction refresh
+    // Schedule AI Lambda to run every 5 seconds for real-time prediction refresh
     const aiRefreshRule = new events.Rule(this, 'AIRefreshRule', {
       ruleName: 'iops-dashboard-ai-prediction-refresh',
-      description: 'Trigger AI Lambda every 5 minutes to refresh customer health predictions',
-      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      description: 'Trigger AI Lambda every 5 seconds to refresh customer health predictions',
+      schedule: events.Schedule.rate(cdk.Duration.seconds(5)),
       enabled: true,
     });
 

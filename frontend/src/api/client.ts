@@ -6,7 +6,7 @@ export interface Insight {
   alert_id: string;
   entity_id: string;
   timestamp: string;
-  prediction_type: 'high_ib_call_frequency' | 'low_health_score' | 'supply_demand_imbalance';
+  prediction_type: 'high_ib_call_frequency' | 'low_health_score' | 'supply_demand_imbalance' | 'churn_risk' | 'customer_health' | 'session_quality' | 'marketplace_balance' | 'tutor_capacity' | 'first_session_success';
   risk_score: number;
   explanation: string;
   recommendations: string[];

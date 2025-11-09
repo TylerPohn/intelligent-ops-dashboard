@@ -56,6 +56,31 @@ export default function WebSocketStatus({ status, lastMessageTime }: WebSocketSt
           color={getStatusColor()}
           size="small"
           variant="outlined"
+          sx={{
+            fontWeight: 600,
+            animation: status === 'connected' ? 'pulse 2s ease-in-out infinite' : 'none',
+            '@keyframes pulse': {
+              '0%, 100%': {
+                opacity: 1,
+                boxShadow: '0 0 0 0 rgba(16, 185, 129, 0.4)',
+              },
+              '50%': {
+                opacity: 0.9,
+                boxShadow: '0 0 0 4px rgba(16, 185, 129, 0)',
+              },
+            },
+            '& .MuiChip-icon': {
+              animation: status === 'connected' ? 'iconPulse 2s ease-in-out infinite' : 'none',
+              '@keyframes iconPulse': {
+                '0%, 100%': {
+                  opacity: 1,
+                },
+                '50%': {
+                  opacity: 0.6,
+                },
+              },
+            },
+          }}
         />
       </Box>
     </Tooltip>
