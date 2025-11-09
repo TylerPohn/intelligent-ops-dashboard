@@ -9,23 +9,27 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import type { Insight } from '../api/client';
+import type { Insight, Aggregations } from '../api/client';
 
 interface RiskDistributionChartProps {
   insights: Insight[];
   loading?: boolean;
+  aggregations?: Aggregations;
 }
 
-export default function RiskDistributionChart({ insights, loading = false }: RiskDistributionChartProps) {
-  // Group insights by prediction type and calculate average risk
+export default function RiskDistributionChart({ insights, loading = false, aggregations }: RiskDistributionChartProps) {
+  // Use aggregations if available, otherwise calculate from loaded insights
   const predictionTypes = ['customer_health', 'churn_risk', 'session_quality', 'marketplace_balance', 'tutor_capacity', 'first_session_success'];
 
   const chartData = predictionTypes.map(type => {
+    // Prefer aggregations data for accurate counts
+    const count = aggregations?.byType?.[type] ?? insights.filter(i => i.prediction_type === type).length;
+
+    // Calculate average risk from loaded insights (approximation)
     const typeInsights = insights.filter(i => i.prediction_type === type);
     const avgRisk = typeInsights.length > 0
       ? typeInsights.reduce((sum, i) => sum + i.risk_score, 0) / typeInsights.length
       : 0;
-    const count = typeInsights.length;
 
     return {
       name: type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),

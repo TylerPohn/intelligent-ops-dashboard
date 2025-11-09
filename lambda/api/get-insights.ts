@@ -19,12 +19,24 @@ interface Insight {
   confidence: number;
 }
 
+interface InsightsResponse {
+  items: Insight[];
+  nextToken?: string;
+  aggregations?: {
+    total: number;
+    critical: number;
+    avgRisk: number;
+    byType: Record<string, number>;
+  };
+}
+
 /**
  * Get recent insights from DynamoDB
  * Supports:
- * - GET /insights/recent?limit=50 (REST JSON)
- * - GET /insights/{alertId} (REST JSON)
- * - GET /stream (SSE streaming)
+ * - GET /insights/recent?limit=50&since=ISO_DATE&nextToken=BASE64&aggregations=true
+ * - GET /insights/aggregations?since=ISO_DATE
+ * - GET /insights/{alertId}
+ * - GET /insights/stream (SSE streaming)
  */
 export const handler: APIGatewayProxyHandler = async (event) => {
   console.log('Get Insights event:', JSON.stringify(event, null, 2));
@@ -107,26 +119,109 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // Handle REST JSON endpoints
     const isRecentRequest = pathSegments[pathSegments.length - 1] === 'recent';
+    const isAggregationsRequest = pathSegments[pathSegments.length - 1] === 'aggregations';
+
+    if (isAggregationsRequest) {
+      // GET /insights/aggregations?since=ISO_DATE
+      const since = event.queryStringParameters?.since;
+
+      // Build query parameters
+      const queryParams: any = {
+        TableName: TABLE_NAME,
+        IndexName: 'EntityTypeIndex',
+        ScanIndexForward: false,
+      };
+
+      // Add time filter if provided (use KeyConditionExpression since timestamp is the sort key)
+      if (since) {
+        queryParams.KeyConditionExpression = 'entity_type = :type AND #ts >= :since';
+        queryParams.ExpressionAttributeNames = { '#ts': 'timestamp' };
+        queryParams.ExpressionAttributeValues = {
+          ':type': 'insight',
+          ':since': since,
+        };
+      } else {
+        queryParams.KeyConditionExpression = 'entity_type = :type';
+        queryParams.ExpressionAttributeValues = {
+          ':type': 'insight',
+        };
+      }
+
+      // Query all matching insights for aggregation
+      const result = await docClient.send(new QueryCommand(queryParams));
+      const items = result.Items || [];
+
+      // Calculate aggregations
+      const total = items.length;
+      const critical = items.filter((item) => (item.risk_score || 0) >= 80).length;
+      const avgRisk = total > 0
+        ? Math.round(items.reduce((sum, item) => sum + (item.risk_score || 0), 0) / total)
+        : 0;
+
+      // Count by prediction type
+      const byType: Record<string, number> = {};
+      items.forEach((item) => {
+        const type = item.prediction_type || 'unknown';
+        byType[type] = (byType[type] || 0) + 1;
+      });
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          total,
+          critical,
+          avgRisk,
+          byType,
+        }),
+      };
+    }
 
     if (isRecentRequest) {
-      // GET /insights/recent?limit=50
+      // GET /insights/recent?limit=50&since=ISO_DATE&nextToken=BASE64&aggregations=true
       const limit = event.queryStringParameters?.limit
         ? parseInt(event.queryStringParameters.limit, 10)
         : 50;
+      const since = event.queryStringParameters?.since;
+      const nextToken = event.queryStringParameters?.nextToken;
+      const includeAggregations = event.queryStringParameters?.aggregations === 'true';
 
-      // Query insights by entity_type = 'insight' and sort by timestamp
-      const result = await docClient.send(
-        new QueryCommand({
-          TableName: TABLE_NAME,
-          IndexName: 'EntityTypeIndex', // GSI on entity_type + timestamp
-          KeyConditionExpression: 'entity_type = :type',
-          ExpressionAttributeValues: {
-            ':type': 'insight',
-          },
-          ScanIndexForward: false, // Sort descending (newest first)
-          Limit: limit,
-        })
-      );
+      // Build query parameters
+      const queryParams: any = {
+        TableName: TABLE_NAME,
+        IndexName: 'EntityTypeIndex',
+        ScanIndexForward: false, // Sort descending (newest first)
+        Limit: limit,
+      };
+
+      // Add time filter if provided (use KeyConditionExpression since timestamp is the sort key)
+      if (since) {
+        queryParams.KeyConditionExpression = 'entity_type = :type AND #ts >= :since';
+        queryParams.ExpressionAttributeNames = { '#ts': 'timestamp' };
+        queryParams.ExpressionAttributeValues = {
+          ':type': 'insight',
+          ':since': since,
+        };
+      } else {
+        queryParams.KeyConditionExpression = 'entity_type = :type';
+        queryParams.ExpressionAttributeValues = {
+          ':type': 'insight',
+        };
+      }
+
+      // Add pagination if provided
+      if (nextToken) {
+        try {
+          queryParams.ExclusiveStartKey = JSON.parse(
+            Buffer.from(nextToken, 'base64').toString()
+          );
+        } catch (e) {
+          console.error('Invalid nextToken:', e);
+        }
+      }
+
+      // Query insights
+      const result = await docClient.send(new QueryCommand(queryParams));
 
       const insights: Insight[] = (result.Items || []).map((item) => ({
         alert_id: item.entity_id,
@@ -140,10 +235,43 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         confidence: item.confidence || 0,
       }));
 
+      // Build response
+      const response: InsightsResponse = {
+        items: insights,
+      };
+
+      // Add pagination token if there are more results
+      if (result.LastEvaluatedKey) {
+        response.nextToken = Buffer.from(
+          JSON.stringify(result.LastEvaluatedKey)
+        ).toString('base64');
+      }
+
+      // Add aggregations if requested
+      if (includeAggregations && insights.length > 0) {
+        const total = insights.length;
+        const critical = insights.filter((i) => i.risk_score >= 80).length;
+        const avgRisk = Math.round(
+          insights.reduce((sum, i) => sum + i.risk_score, 0) / total
+        );
+
+        const byType: Record<string, number> = {};
+        insights.forEach((i) => {
+          byType[i.prediction_type] = (byType[i.prediction_type] || 0) + 1;
+        });
+
+        response.aggregations = {
+          total,
+          critical,
+          avgRisk,
+          byType,
+        };
+      }
+
       return {
         statusCode: 200,
         headers,
-        body: JSON.stringify(insights),
+        body: JSON.stringify(response),
       };
     } else {
       // GET /insights/{alertId}

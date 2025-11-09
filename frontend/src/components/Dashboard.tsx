@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { Container, Box, Typography, AppBar, Toolbar, Grid, Paper } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
@@ -10,22 +9,14 @@ import AlertNotification from './AlertNotification';
 import RiskDistributionChart from './HealthChart';
 import InsightTrendsChart from './SessionsChart';
 import KPICard from './KPICard';
+import TimeRangeSelector from './TimeRangeSelector';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import PeopleIcon from '@mui/icons-material/People';
 import AssessmentIcon from '@mui/icons-material/Assessment';
 import { usePolling } from '../hooks/usePolling';
-import { insightsAPI } from '../api/client';
-import type { Insight } from '../api/client';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+import { insightsAPI, getTimeRangeISO } from '../api/client';
+import type { Insight, TimeRange, Aggregations } from '../api/client';
 
 const darkTheme = createTheme({
   palette: {
@@ -51,37 +42,90 @@ const darkTheme = createTheme({
   },
 });
 
-function DashboardContent() {
+export default function Dashboard() {
   const [newAlert, setNewAlert] = useState<Insight | null>(null);
   const [showNotification, setShowNotification] = useState(false);
   const [lastMessageTime, setLastMessageTime] = useState<Date | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>('today');
 
-  const API_URL = `${import.meta.env.VITE_API_URL}/insights/recent?limit=10`;
+  // Use global QueryClient from context instead of creating a new one
+  const queryClient = useQueryClient();
 
-  const { data: insights } = useQuery({
-    queryKey: ['insights', 'recent'],
-    queryFn: () => insightsAPI.getRecent(1000),
-    refetchInterval: 10000,
+  // Query 1: Get aggregations for accurate KPIs and charts (fast, no items)
+  const { data: aggregations } = useQuery({
+    queryKey: ['insights', 'aggregations', timeRange],
+    queryFn: () => insightsAPI.getAggregations(getTimeRangeISO(timeRange)),
+    staleTime: 60 * 1000, // 1 minute cache for stats
+    refetchInterval: 60 * 1000, // Refetch every minute
   });
 
-  const { status, lastData } = usePolling({
-    url: API_URL,
-    interval: 5000, // Poll every 5 seconds
-    invalidateQueries: ['insights', 'metrics'],
+  // Query 2: Paginated insights for display (using infinite query for virtual scroll support)
+  const {
+    data: insightsData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['insights', 'items', timeRange],
+    queryFn: ({ pageParam }) => insightsAPI.getRecentWithFilters({
+      limit: 100,
+      since: getTimeRangeISO(timeRange),
+      nextToken: pageParam,
+    }),
+    staleTime: 5 * 60 * 1000, // 5 minute cache
+    refetchInterval: false, // Disable automatic refetch - let polling handle it
+    getNextPageParam: (lastPage) => lastPage.nextToken,
+    initialPageParam: undefined,
+  });
+
+  // Get latest timestamp from cached data for incremental polling
+  const latestTimestamp = insightsData?.pages?.[0]?.items?.[0]?.timestamp;
+
+  // Smart polling: only fetch NEW insights since latest timestamp
+  const { status } = usePolling({
+    url: latestTimestamp
+      ? `${import.meta.env.VITE_API_URL}/insights/recent?limit=10&since=${latestTimestamp}`
+      : `${import.meta.env.VITE_API_URL}/insights/recent?limit=10`,
+    interval: 10000, // Poll every 10 seconds
+    invalidateQueries: [], // Don't invalidate - we'll manually update cache
     onData: (data) => {
-      console.log('Polling data received:', data);
+      console.log('Polling: Received', data?.items?.length || data?.length || 0, 'new insights');
       setLastMessageTime(new Date());
 
-      // Handle new alerts - check if there are new items
-      if (data && Array.isArray(data) && data.length > 0) {
-        const latestAlert = data[0] as Insight;
+      const newInsights = Array.isArray(data) ? data : (data?.items || []);
 
-        // Only show notification if this is a genuinely new alert
-        // (you could track last seen alert_id to be more precise)
-        if (latestAlert) {
-          setNewAlert(latestAlert);
-          setShowNotification(true);
-        }
+      if (newInsights.length > 0) {
+        // Manual cache update: PREPEND new insights without invalidating
+        queryClient.setQueryData(
+          ['insights', 'items', timeRange],
+          (old: any) => {
+            if (!old || !old.pages || old.pages.length === 0) {
+              return { pages: [{ items: newInsights, nextToken: undefined }], pageParams: [undefined] };
+            }
+
+            const firstPage = old.pages[0] || { items: [], nextToken: undefined };
+            const existingItems = Array.isArray(firstPage.items) ? firstPage.items : [];
+
+            // Merge new insights with existing first page (keep max 100 per page)
+            const updatedFirstPage = {
+              ...firstPage,
+              items: [...newInsights, ...existingItems].slice(0, 100),
+            };
+
+            return {
+              ...old,
+              pages: [updatedFirstPage, ...old.pages.slice(1)],
+            };
+          }
+        );
+
+        // Show notification for the latest alert
+        const latestAlert = newInsights[0] as Insight;
+        setNewAlert(latestAlert);
+        setShowNotification(true);
+
+        // Also refetch aggregations since we have new data
+        queryClient.invalidateQueries({ queryKey: ['insights', 'aggregations', timeRange] });
       }
     },
     onConnect: () => {
@@ -95,48 +139,41 @@ function DashboardContent() {
     },
   });
 
-  // Calculate KPI metrics from insights
-  const totalAlerts = insights?.length || 0;
-  const criticalAlerts = insights?.filter(i => i.risk_score >= 80).length || 0;
-  const avgRiskScore = insights?.length
-    ? Math.round(insights.reduce((sum, i) => sum + i.risk_score, 0) / insights.length)
-    : 0;
-  const churnRiskAlerts = insights?.filter(i => i.prediction_type === 'churn_risk').length || 0;
+  // Flatten all pages for KPI calculation fallback (if aggregations not loaded yet)
+  const allInsights = insightsData?.pages?.flatMap((page) => page.items) || [];
 
-  useEffect(() => {
-    if (lastData) {
-      console.log('Last data updated:', lastData.length, 'items');
-    }
-  }, [lastData]);
+  // Use aggregations for KPIs if available, otherwise calculate from loaded items
+  const totalAlerts = aggregations?.total ?? allInsights.length;
+  const criticalAlerts = aggregations?.critical ?? allInsights.filter(i => i?.risk_score >= 80).length;
+  const avgRiskScore = aggregations?.avgRisk ?? (
+    allInsights.length > 0
+      ? Math.round(allInsights.reduce((sum, i) => sum + (i?.risk_score || 0), 0) / allInsights.length)
+      : 0
+  );
+  const churnRiskAlerts = aggregations?.byType?.churn_risk ?? allInsights.filter(i => i?.prediction_type === 'churn_risk').length;
 
   return (
-    <>
+    <ThemeProvider theme={darkTheme}>
       <CssBaseline />
       <AppBar position="static" elevation={1}>
         <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+          <Typography variant="h6" component="div" sx={{ mr: 4 }}>
             Tutor Marketplace Operations
           </Typography>
+          <TimeRangeSelector value={timeRange} onChange={setTimeRange} />
+          <Box sx={{ flexGrow: 1 }} />
           <WebSocketStatus status={status} lastMessageTime={lastMessageTime} />
         </Toolbar>
       </AppBar>
 
-      <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
-        <Box mb={3}>
-          <Typography variant="h4" gutterBottom>
-            Real-Time Operations Monitoring
-          </Typography>
-          <Typography variant="body1" color="text.secondary">
-            AI-powered insights and alerts for customer health, churn risk, and marketplace balance
-          </Typography>
-        </Box>
-
+      <Container maxWidth={false} sx={{ mt: 4, mb: 4 }}>
         <Grid container spacing={3}>
           {/* KPI Cards */}
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <KPICard
               title="Total Alerts"
               value={totalAlerts}
+              subtitle="Active insights"
               icon={<AssessmentIcon />}
               color="primary"
               trend="neutral"
@@ -146,19 +183,19 @@ function DashboardContent() {
             <KPICard
               title="Critical Alerts"
               value={criticalAlerts}
+              subtitle={`${totalAlerts > 0 ? ((criticalAlerts / totalAlerts) * 100).toFixed(0) : 0}% of total`}
               icon={<TrendingUpIcon />}
               color="error"
-              trend={criticalAlerts > 0 ? "up" : "neutral"}
-              trendValue={criticalAlerts > 0 ? `${criticalAlerts} active` : undefined}
+              trend={criticalAlerts > 5 ? 'up' : 'down'}
             />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <KPICard
               title="Avg Risk Score"
               value={avgRiskScore}
-              unit="/100"
+              subtitle="System-wide average"
               icon={<TrendingDownIcon />}
-              color={avgRiskScore >= 70 ? "error" : avgRiskScore >= 50 ? "warning" : "success"}
+              color="info"
               trend="neutral"
             />
           </Grid>
@@ -166,6 +203,7 @@ function DashboardContent() {
             <KPICard
               title="Churn Risks"
               value={churnRiskAlerts}
+              subtitle="Students at risk"
               icon={<PeopleIcon />}
               color="warning"
               trend="neutral"
@@ -174,15 +212,23 @@ function DashboardContent() {
 
           {/* Charts */}
           <Grid size={{ xs: 12, md: 6 }}>
-            <RiskDistributionChart insights={insights || []} loading={!insights} />
+            <RiskDistributionChart
+              insights={allInsights}
+              loading={!aggregations && allInsights.length === 0}
+              aggregations={aggregations}
+            />
           </Grid>
           <Grid size={{ xs: 12, md: 6 }}>
-            <InsightTrendsChart insights={insights || []} loading={!insights} />
+            <InsightTrendsChart
+              insights={allInsights}
+              loading={!aggregations && allInsights.length === 0}
+              aggregations={aggregations}
+            />
           </Grid>
 
           {/* Alerts Feed */}
           <Grid size={{ xs: 12, lg: 8 }}>
-            <AlertsFeed />
+            <AlertsFeed timeRange={timeRange} onFilterChange={setTimeRange} />
           </Grid>
 
           {/* System Status */}
@@ -191,7 +237,7 @@ function DashboardContent() {
               <Typography variant="h6" gutterBottom>
                 System Status
               </Typography>
-              <Box sx={{ mt: 2 }}>
+              <Box>
                 <Typography variant="body2" color="text.secondary" gutterBottom>
                   Connection: <strong>{status}</strong>
                 </Typography>
@@ -225,17 +271,6 @@ function DashboardContent() {
         open={showNotification}
         onClose={() => setShowNotification(false)}
       />
-    </>
-  );
-}
-
-export default function Dashboard() {
-  return (
-    <ThemeProvider theme={darkTheme}>
-      <QueryClientProvider client={queryClient}>
-        <DashboardContent />
-        <ReactQueryDevtools initialIsOpen={false} />
-      </QueryClientProvider>
     </ThemeProvider>
   );
 }

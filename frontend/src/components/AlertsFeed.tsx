@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { useState, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -23,26 +23,55 @@ import {
   Fade,
   Grow,
   Skeleton,
+  CircularProgress,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material';
 import WarningIcon from '@mui/icons-material/Warning';
 import LightbulbIcon from '@mui/icons-material/Lightbulb';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import { insightsAPI } from '../api/client';
-import type { Insight } from '../api/client';
+import { insightsAPI, getTimeRangeISO } from '../api/client';
+import type { Insight, TimeRange } from '../api/client';
 
-export default function AlertsFeed() {
+interface AlertsFeedProps {
+  timeRange: TimeRange;
+  onFilterChange?: (range: TimeRange) => void;
+}
+
+export default function AlertsFeed({ timeRange }: AlertsFeedProps) {
   const [filter, setFilter] = useState<string>('all');
   const [selectedAlert, setSelectedAlert] = useState<Insight | null>(null);
 
-  const { data: insights, isLoading, error } = useQuery({
-    queryKey: ['insights', 'recent'],
-    queryFn: () => insightsAPI.getRecent(50),
-    refetchInterval: 10000, // Refetch every 10 seconds
+  // Use same infinite query pattern as Dashboard for shared cache
+  const {
+    data: insightsData,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    error,
+  } = useInfiniteQuery({
+    queryKey: ['insights', 'items', timeRange],
+    queryFn: ({ pageParam }) => insightsAPI.getRecentWithFilters({
+      limit: 100,
+      since: getTimeRangeISO(timeRange),
+      nextToken: pageParam,
+    }),
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: false,
+    getNextPageParam: (lastPage) => lastPage.nextToken,
+    initialPageParam: undefined,
   });
 
-  const filteredInsights = insights?.filter(i =>
-    filter === 'all' || i.prediction_type === filter
+  // Flatten all pages
+  const allInsights = useMemo(
+    () => insightsData?.pages.flatMap((page) => page.items) || [],
+    [insightsData]
+  );
+
+  // Filter by prediction type
+  const filteredInsights = useMemo(
+    () => allInsights.filter((i) => filter === 'all' || i.prediction_type === filter),
+    [allInsights, filter]
   );
 
   const getSeverityColor = (score: number): 'error' | 'warning' | 'info' => {
@@ -53,6 +82,14 @@ export default function AlertsFeed() {
 
   const handleFilterChange = (event: SelectChangeEvent) => {
     setFilter(event.target.value);
+  };
+
+  const handleScroll = (e: React.UIEvent<HTMLElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    // Trigger load more when scrolled to bottom 90%
+    if (scrollHeight - scrollTop <= clientHeight * 1.1 && hasNextPage && !isFetchingNextPage) {
+      fetchNextPage();
+    }
   };
 
   if (error) {
@@ -69,6 +106,14 @@ export default function AlertsFeed() {
         <Box display="flex" alignItems="center" gap={1}>
           <WarningIcon color="error" />
           <Typography variant="h6">Live Alerts Feed</Typography>
+          {!isLoading && (
+            <Chip
+              label={`${filteredInsights.length} alerts`}
+              size="small"
+              color="primary"
+              variant="outlined"
+            />
+          )}
         </Box>
 
         <FormControl size="small" sx={{ minWidth: 200 }}>
@@ -96,72 +141,92 @@ export default function AlertsFeed() {
           ))}
         </Stack>
       ) : (
-        <List sx={{ maxHeight: 600, overflow: 'auto' }}>
+        <List
+          sx={{ maxHeight: 600, overflow: 'auto' }}
+          onScroll={handleScroll}
+        >
           {filteredInsights && filteredInsights.length > 0 ? (
-            filteredInsights.map((alert, index) => (
-              <Grow
-                key={alert.alert_id}
-                in={true}
-                timeout={300 + index * 50}
-                style={{ transformOrigin: '0 0 0' }}
-              >
-                <Box>
-                  {index > 0 && <Divider />}
-                  <ListItem
-                    disablePadding
-                    sx={{
-                      position: 'relative',
-                      '&::before': alert.risk_score >= 80 ? {
-                        content: '""',
-                        position: 'absolute',
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: 4,
-                        bgcolor: 'error.main',
-                        borderRadius: '0 4px 4px 0',
-                        animation: alert.risk_score >= 85 ? 'pulse 2s ease-in-out infinite' : 'none',
-                        '@keyframes pulse': {
-                          '0%, 100%': { opacity: 1 },
-                          '50%': { opacity: 0.5 },
-                        },
-                      } : {},
-                    }}
-                  >
-                    <ListItemButton onClick={() => setSelectedAlert(alert)}>
-                      <ListItemText
-                        primary={
-                          <Box display="flex" alignItems="center" gap={1} mb={1}>
-                            <Chip
-                              label={alert.risk_score}
-                              color={getSeverityColor(alert.risk_score)}
-                              size="small"
-                              sx={{
-                                fontWeight: 700,
-                                minWidth: 45,
-                              }}
-                            />
-                            <Typography variant="body2" color="text.secondary">
-                              {new Date(alert.timestamp).toLocaleTimeString()}
-                            </Typography>
-                          </Box>
-                        }
-                        secondary={
-                          <Box>
-                            <Typography variant="subtitle2" color="text.primary" gutterBottom>
-                              {alert.entity_id}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              {alert.explanation.substring(0, 100)}...
-                            </Typography>
-                          </Box>
-                        }
-                      />
-                    </ListItemButton>
-                  </ListItem>
+            <>
+              {filteredInsights.map((alert, index) => (
+                <Grow
+                  key={alert.alert_id}
+                  in={true}
+                  timeout={300 + index * 50}
+                  style={{ transformOrigin: '0 0 0' }}
+                >
+                  <Box>
+                    {index > 0 && <Divider />}
+                    <ListItem
+                      disablePadding
+                      sx={{
+                        position: 'relative',
+                        '&::before': alert.risk_score >= 80 ? {
+                          content: '""',
+                          position: 'absolute',
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          width: 4,
+                          bgcolor: 'error.main',
+                          borderRadius: '0 4px 4px 0',
+                          animation: alert.risk_score >= 85 ? 'pulse 2s ease-in-out infinite' : 'none',
+                          '@keyframes pulse': {
+                            '0%, 100%': { opacity: 1 },
+                            '50%': { opacity: 0.5 },
+                          },
+                        } : {},
+                      }}
+                    >
+                      <ListItemButton onClick={() => setSelectedAlert(alert)}>
+                        <ListItemText
+                          primary={
+                            <Box display="flex" alignItems="center" gap={1} mb={1}>
+                              <Chip
+                                label={alert.risk_score}
+                                color={getSeverityColor(alert.risk_score)}
+                                size="small"
+                                sx={{
+                                  fontWeight: 700,
+                                  minWidth: 45,
+                                }}
+                              />
+                              <Typography variant="body2" color="text.secondary">
+                                {new Date(alert.timestamp).toLocaleTimeString()}
+                              </Typography>
+                            </Box>
+                          }
+                          secondary={
+                            <Box>
+                              <Typography variant="subtitle2" color="text.primary" gutterBottom>
+                                {alert.entity_id}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {alert.explanation.substring(0, 100)}...
+                              </Typography>
+                            </Box>
+                          }
+                        />
+                      </ListItemButton>
+                    </ListItem>
+                  </Box>
+                </Grow>
+              ))}
+
+              {/* Load More Indicator */}
+              {isFetchingNextPage && (
+                <Box display="flex" justifyContent="center" p={2}>
+                  <CircularProgress size={24} />
                 </Box>
-              </Grow>
-            ))
+              )}
+
+              {!hasNextPage && filteredInsights.length > 10 && (
+                <Box p={2}>
+                  <Typography variant="body2" color="text.secondary" align="center">
+                    No more alerts to load
+                  </Typography>
+                </Box>
+              )}
+            </>
           ) : (
             <Fade in={true} timeout={500}>
               <Typography color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>

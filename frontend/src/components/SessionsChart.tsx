@@ -10,14 +10,15 @@ import {
   Area,
   ComposedChart,
 } from 'recharts';
-import type { Insight } from '../api/client';
+import type { Insight, Aggregations } from '../api/client';
 
 interface InsightTrendsChartProps {
   insights: Insight[];
   loading?: boolean;
+  aggregations?: Aggregations;
 }
 
-export default function InsightTrendsChart({ insights, loading = false }: InsightTrendsChartProps) {
+export default function InsightTrendsChart({ insights, loading = false, aggregations }: InsightTrendsChartProps) {
   // Sort insights by timestamp to get distribution
   const sortedInsights = [...insights].sort((a, b) =>
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()

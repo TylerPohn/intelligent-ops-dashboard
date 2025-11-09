@@ -247,8 +247,8 @@ export class CdkStack extends cdk.Stack {
     // Create Insights Lambda (TypeScript)
     const insightsLambda = new lambda.Function(this, 'InsightsFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'get-insights.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/api/dist')),
+      handler: 'dist/get-insights.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/api')),
       role: this.lambdaExecutionRole,
       environment: {
         DYNAMODB_TABLE_NAME: this.metricsTable.tableName,
@@ -271,7 +271,11 @@ export class CdkStack extends cdk.Stack {
     const recentResource = insightsResource.addResource('recent');
     recentResource.addMethod('GET', new apigateway.LambdaIntegration(insightsLambda));
 
-    // Add /insights/{id} endpoint
+    // Add /insights/aggregations endpoint
+    const aggregationsResource = insightsResource.addResource('aggregations');
+    aggregationsResource.addMethod('GET', new apigateway.LambdaIntegration(insightsLambda));
+
+    // Add /insights/{id} endpoint (must be last to avoid conflicts)
     const insightIdResource = insightsResource.addResource('{id}');
     insightIdResource.addMethod('GET', new apigateway.LambdaIntegration(insightsLambda));
 
@@ -384,11 +388,11 @@ export class CdkStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // Schedule AI Lambda to run every 5 seconds for real-time prediction refresh
+    // Schedule AI Lambda to run every 1 minute for regular prediction refresh
     const aiRefreshRule = new events.Rule(this, 'AIRefreshRule', {
       ruleName: 'iops-dashboard-ai-prediction-refresh',
-      description: 'Trigger AI Lambda every 5 seconds to refresh customer health predictions',
-      schedule: events.Schedule.rate(cdk.Duration.seconds(5)),
+      description: 'Trigger AI Lambda every 1 minute to refresh customer health predictions',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       enabled: true,
     });
 

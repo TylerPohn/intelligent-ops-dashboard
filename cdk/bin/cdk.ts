@@ -45,9 +45,10 @@ try {
   });
   console.log('[CDK] Experience Stack created successfully');
 
-  console.log('[CDK] Running app.synth()...');
-  app.synth();
-  console.log('[CDK] app.synth() completed successfully');
+  // NOTE: Commenting out app.synth() to allow CDK CLI to handle synth and deploy
+  // console.log('[CDK] Running app.synth()...');
+  // app.synth();
+  // console.log('[CDK] app.synth() completed successfully');
 } catch (error) {
   console.error('[CDK] FATAL ERROR during CDK initialization:');
   console.error(error);
