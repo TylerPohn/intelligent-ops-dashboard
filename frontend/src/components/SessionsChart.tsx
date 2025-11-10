@@ -15,7 +15,7 @@ import type { Insight, Aggregations, TimeRange } from '../api/client';
 interface InsightTrendsChartProps {
   insights: Insight[];
   loading?: boolean;
-  aggregations?: Aggregations;
+  aggregations?: Aggregations; // Used in Dashboard but not here
   timeRange?: TimeRange;
 }
 

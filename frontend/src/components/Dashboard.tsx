@@ -87,11 +87,13 @@ export default function Dashboard() {
     invalidateQueries: [], // Don't invalidate - we'll manually update cache
     onData: (data) => {
       const typedData = data as { items?: Insight[] } | Insight[] | undefined;
-      const itemsLength = Array.isArray(typedData) ? typedData.length : (typedData?.items?.length || 0);
+      const itemsLength = Array.isArray(typedData) ? typedData.length : (typedData && 'items' in typedData ? typedData.items?.length || 0 : 0);
       console.log('Polling: Received', itemsLength, 'new insights');
       setLastMessageTime(new Date());
 
-      const newInsights = Array.isArray(data) ? data : ((data as { items?: Insight[] })?.items || []);
+      const newInsights: Insight[] = Array.isArray(data)
+        ? (data as Insight[])
+        : (data && typeof data === 'object' && 'items' in data ? (data as { items?: Insight[] }).items || [] : []);
 
       if (newInsights.length > 0) {
         // Manual cache update: PREPEND new insights to the existing array
@@ -102,7 +104,7 @@ export default function Dashboard() {
             // Prepend new insights and remove duplicates by alert_id
             const combined = [...newInsights, ...existing];
             const unique = Array.from(
-              new Map(combined.map(item => [item.alert_id, item])).values()
+              new Map(combined.map((item: Insight) => [item.alert_id, item])).values()
             );
             return unique;
           }
