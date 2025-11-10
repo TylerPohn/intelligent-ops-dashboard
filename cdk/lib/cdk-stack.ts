@@ -288,7 +288,7 @@ export class CdkStack extends cdk.Stack {
           image: lambda.Runtime.PYTHON_3_12.bundlingImage,
           command: [
             'bash', '-c',
-            'pip install -r requirements.txt -t /asset-output && cp -au . /asset-output'
+            'pip install -r requirements.txt -t /asset-output --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.12 && cp handler.py /asset-output/'
           ],
         },
       }),
@@ -338,7 +338,7 @@ export class CdkStack extends cdk.Stack {
           image: lambda.Runtime.PYTHON_3_12.bundlingImage,
           command: [
             'bash', '-c',
-            'pip install -r requirements.txt -t /asset-output && cp -au . /asset-output'
+            'pip install -r requirements.txt -t /asset-output --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.12 && cp handler.py /asset-output/'
           ],
         },
       }),

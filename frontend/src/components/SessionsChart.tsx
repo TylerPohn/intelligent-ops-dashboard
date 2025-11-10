@@ -10,46 +10,145 @@ import {
   Area,
   ComposedChart,
 } from 'recharts';
-import type { Insight, Aggregations } from '../api/client';
+import type { Insight, Aggregations, TimeRange } from '../api/client';
 
 interface InsightTrendsChartProps {
   insights: Insight[];
   loading?: boolean;
   aggregations?: Aggregations;
+  timeRange?: TimeRange;
 }
 
-export default function InsightTrendsChart({ insights, loading = false }: InsightTrendsChartProps) {
-  // Sort insights by timestamp to get distribution
+// Get bucket configuration based on time range
+const getBucketConfig = (timeRange?: TimeRange) => {
+  switch (timeRange) {
+    case '1h':
+      return { intervalMs: 10 * 60 * 1000, label: '10 min' }; // 10 minutes
+    case '3h':
+      return { intervalMs: 20 * 60 * 1000, label: '20 min' }; // 20 minutes
+    case 'today':
+      return { intervalMs: 2 * 60 * 60 * 1000, label: '2 hours' }; // 2 hours
+    case 'week':
+      return { intervalMs: 24 * 60 * 60 * 1000, label: '1 day' }; // 1 day
+    default:
+      return { intervalMs: 30 * 60 * 1000, label: '30 min' }; // default 30 minutes
+  }
+};
+
+export default function InsightTrendsChart({ insights, loading = false, timeRange }: InsightTrendsChartProps) {
+  // Sort insights by timestamp
   const sortedInsights = [...insights].sort((a, b) =>
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  // Group insights into buckets (12 time points for better visualization)
-  const bucketCount = 12;
-  const insightsPerBucket = Math.ceil(sortedInsights.length / bucketCount);
+  const { intervalMs } = getBucketConfig(timeRange);
 
-  const chartData = Array.from({ length: bucketCount }, (_, i) => {
-    const startIdx = i * insightsPerBucket;
-    const endIdx = Math.min(startIdx + insightsPerBucket, sortedInsights.length);
-    const bucketInsights = sortedInsights.slice(startIdx, endIdx);
+  let chartData: Array<{ time: string; 'Critical Alerts': number; 'Churn Risks': number }> = [];
 
-    const criticalCount = bucketInsights.filter(i => i.risk_score >= 80).length;
-    const churnCount = bucketInsights.filter(i => i.prediction_type === 'churn_risk').length;
+  // Get time range bounds - use ACTUAL time range, not just data range
+  const now = new Date().getTime();
+  let rangeStartTime: number;
 
-    // Create time label based on the first insight in bucket
-    const timeLabel = bucketInsights.length > 0
-      ? new Date(bucketInsights[0].timestamp).toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit'
-        })
-      : `T${i + 1}`;
+  switch (timeRange) {
+    case '1h':
+      rangeStartTime = now - (60 * 60 * 1000); // 1 hour ago
+      break;
+    case '3h':
+      rangeStartTime = now - (3 * 60 * 60 * 1000); // 3 hours ago
+      break;
+    case 'today':
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      rangeStartTime = today.getTime(); // Start of today
+      break;
+    case 'week':
+      rangeStartTime = now - (7 * 24 * 60 * 60 * 1000); // 7 days ago
+      break;
+    default:
+      rangeStartTime = now - (24 * 60 * 60 * 1000); // Default 1 day ago
+  }
 
-    return {
-      time: timeLabel,
-      'Critical Alerts': criticalCount,
-      'Churn Risks': churnCount,
-    };
-  }).filter(d => d['Critical Alerts'] > 0 || d['Churn Risks'] > 0); // Only show buckets with data
+  console.log('📊 Chart Debug:', {
+    timeRange,
+    intervalMs,
+    rangeStart: new Date(rangeStartTime).toISOString(),
+    now: new Date(now).toISOString(),
+    insightCount: sortedInsights.length,
+    firstInsight: sortedInsights[0]?.timestamp,
+    lastInsight: sortedInsights[sortedInsights.length - 1]?.timestamp,
+  });
+
+  // Create time buckets based on interval for ENTIRE time range
+  const buckets = new Map<number, { critical: number; churn: number; timestamp: number }>();
+
+  // Initialize buckets from range start to now
+  let currentBucketStart = Math.floor(rangeStartTime / intervalMs) * intervalMs;
+  const maxBucketStart = Math.floor(now / intervalMs) * intervalMs;
+
+  let bucketCount = 0;
+  while (currentBucketStart <= maxBucketStart) {
+    buckets.set(currentBucketStart, { critical: 0, churn: 0, timestamp: currentBucketStart });
+    currentBucketStart += intervalMs;
+    bucketCount++;
+  }
+
+  console.log(`📊 Created ${bucketCount} time buckets`);
+
+  // Assign insights to buckets (only if we have insights)
+  let assignedCount = 0;
+  if (sortedInsights.length > 0) {
+    sortedInsights.forEach((insight, idx) => {
+      // Ensure timestamp is parsed as UTC by appending 'Z' if not present
+      const timestamp = insight.timestamp.endsWith('Z') ? insight.timestamp : insight.timestamp + 'Z';
+      const insightTime = new Date(timestamp).getTime();
+      const bucketStart = Math.floor(insightTime / intervalMs) * intervalMs;
+
+      const bucket = buckets.get(bucketStart);
+      if (bucket) {
+        if (insight.risk_score >= 80) {
+          bucket.critical++;
+        }
+        if (insight.prediction_type === 'churn_risk') {
+          bucket.churn++;
+        }
+        assignedCount++;
+      } else {
+        if (idx < 5) { // Only log first 5 misses
+          console.warn(`❌ No bucket for insight at ${new Date(insightTime).toISOString()}, bucketStart would be ${new Date(bucketStart).toISOString()}`);
+        }
+      }
+    });
+
+    console.log(`📊 Assigned ${assignedCount} / ${sortedInsights.length} insights to buckets`);
+  }
+
+  // Convert to chart data - SHOW ALL BUCKETS including zeros
+  chartData = Array.from(buckets.values())
+    .map(bucket => {
+      const date = new Date(bucket.timestamp);
+      let timeLabel: string;
+
+      if (timeRange === 'week') {
+        // For week view, show day of week
+        timeLabel = date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      } else if (timeRange === 'today') {
+        // For today, show hour
+        timeLabel = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      } else {
+        // For 1h and 3h, show time
+        timeLabel = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      }
+
+      return {
+        time: timeLabel,
+        'Critical Alerts': bucket.critical,
+        'Churn Risks': bucket.churn,
+      };
+    });
+    // Don't filter - show all buckets including zeros for proper time distribution
+
+  const nonZeroBuckets = chartData.filter(d => d['Critical Alerts'] > 0 || d['Churn Risks'] > 0).length;
+  console.log(`📊 Chart has ${chartData.length} total buckets, ${nonZeroBuckets} with data`);
 
   return (
     <Card sx={{ height: '100%' }}>
@@ -102,12 +201,37 @@ export default function InsightTrendsChart({ insights, loading = false }: Insigh
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: '#ffffff',
-                  border: '1px solid #e0e0e0',
+                  backgroundColor: '#1e1e1e',
+                  border: '1px solid #667eea',
                   borderRadius: 12,
-                  boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+                  padding: '12px',
+                  color: '#ffffff',
                 }}
-                cursor={{ stroke: '#667eea', strokeWidth: 2, strokeDasharray: '5 5' }}
+                labelStyle={{
+                  color: '#ffffff',
+                  fontWeight: 600,
+                  marginBottom: '8px',
+                }}
+                itemStyle={{
+                  color: '#e0e0e0',
+                }}
+                formatter={(value: number, name: string) => {
+                  const colorMap: Record<string, string> = {
+                    'Critical Alerts': '#ef4444',
+                    'Churn Risks': '#f59e0b',
+                  };
+                  return [
+                    <span style={{ color: colorMap[name] || '#e0e0e0', fontWeight: 600 }}>
+                      {value}
+                    </span>,
+                    name
+                  ];
+                }}
+                labelFormatter={(label: string) => {
+                  return `Time: ${label}`;
+                }}
+                cursor={{ fill: 'rgba(102, 126, 234, 0.1)' }}
               />
               <Legend
                 wrapperStyle={{ fontSize: 12 }}
@@ -121,6 +245,7 @@ export default function InsightTrendsChart({ insights, loading = false }: Insigh
                 animationDuration={1000}
                 animationEasing="ease-out"
                 legendType="none"
+                hide={true}
               />
               <Line
                 type="monotone"
@@ -141,6 +266,7 @@ export default function InsightTrendsChart({ insights, loading = false }: Insigh
                 animationDuration={1000}
                 animationEasing="ease-out"
                 legendType="none"
+                hide={true}
               />
               <Line
                 type="monotone"

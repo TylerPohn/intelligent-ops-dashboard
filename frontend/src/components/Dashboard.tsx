@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Container, Box, Typography, AppBar, Toolbar, Grid, Paper } from '@mui/material';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
@@ -59,24 +59,24 @@ export default function Dashboard() {
     refetchInterval: 60 * 1000, // Refetch every minute
   });
 
-  // Query 2: Paginated insights for display (using infinite query for virtual scroll support)
+  // Query 2: Get ALL insights for the selected time range (handles pagination automatically)
   const {
-    data: insightsData,
-  } = useInfiniteQuery({
-    queryKey: ['insights', 'items', timeRange],
-    queryFn: ({ pageParam }: { pageParam: string | undefined }) => insightsAPI.getRecentWithFilters({
-      limit: 100,
-      since: getTimeRangeISO(timeRange),
-      nextToken: pageParam,
-    }),
+    data: allInsights = [],
+    isLoading: insightsLoading,
+  } = useQuery({
+    queryKey: ['insights', 'all', timeRange],
+    queryFn: ({ signal }) => insightsAPI.getAllInTimeRange(getTimeRangeISO(timeRange), signal),
     staleTime: 5 * 60 * 1000, // 5 minute cache
+    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
     refetchInterval: false, // Disable automatic refetch - let polling handle it
-    getNextPageParam: (lastPage) => lastPage.nextToken,
-    initialPageParam: undefined as string | undefined,
+    refetchOnMount: false, // Don't refetch on component mount if data exists
+    refetchOnWindowFocus: false, // Don't refetch when window regains focus
+    refetchOnReconnect: false, // Don't refetch when reconnecting
+    retry: 1, // Only retry once on failure
   });
 
   // Get latest timestamp from cached data for incremental polling
-  const latestTimestamp = (insightsData?.pages?.[0] as { items: Insight[] } | undefined)?.items?.[0]?.timestamp;
+  const latestTimestamp = allInsights.length > 0 ? allInsights[0]?.timestamp : undefined;
 
   // Smart polling: only fetch NEW insights since latest timestamp
   const { status } = usePolling({
@@ -94,27 +94,17 @@ export default function Dashboard() {
       const newInsights = Array.isArray(data) ? data : ((data as { items?: Insight[] })?.items || []);
 
       if (newInsights.length > 0) {
-        // Manual cache update: PREPEND new insights without invalidating
+        // Manual cache update: PREPEND new insights to the existing array
         queryClient.setQueryData(
-          ['insights', 'items', timeRange],
-          (old: any) => {
-            if (!old || !old.pages || old.pages.length === 0) {
-              return { pages: [{ items: newInsights, nextToken: undefined }], pageParams: [undefined] };
-            }
-
-            const firstPage = (old.pages[0] as { items: Insight[]; nextToken?: string }) || { items: [], nextToken: undefined };
-            const existingItems = Array.isArray(firstPage.items) ? firstPage.items : [];
-
-            // Merge new insights with existing first page (keep max 100 per page)
-            const updatedFirstPage = {
-              ...firstPage,
-              items: [...newInsights, ...existingItems].slice(0, 100),
-            };
-
-            return {
-              ...old,
-              pages: [updatedFirstPage, ...old.pages.slice(1)],
-            };
+          ['insights', 'all', timeRange],
+          (old: Insight[] | undefined) => {
+            const existing = old || [];
+            // Prepend new insights and remove duplicates by alert_id
+            const combined = [...newInsights, ...existing];
+            const unique = Array.from(
+              new Map(combined.map(item => [item.alert_id, item])).values()
+            );
+            return unique;
           }
         );
 
@@ -137,9 +127,6 @@ export default function Dashboard() {
       console.error('Dashboard: Polling error:', error);
     },
   });
-
-  // Flatten all pages for KPI calculation fallback (if aggregations not loaded yet)
-  const allInsights = insightsData?.pages?.flatMap((page: { items: Insight[] }) => page.items) || [];
 
   // Use aggregations for KPIs if available, otherwise calculate from loaded items
   const totalAlerts = aggregations?.total ?? allInsights.length;
@@ -213,15 +200,16 @@ export default function Dashboard() {
           <Grid size={{ xs: 12, md: 6 }}>
             <RiskDistributionChart
               insights={allInsights}
-              loading={!aggregations && allInsights.length === 0}
+              loading={insightsLoading}
               aggregations={aggregations}
             />
           </Grid>
           <Grid size={{ xs: 12, md: 6 }}>
             <InsightTrendsChart
               insights={allInsights}
-              loading={!aggregations && allInsights.length === 0}
+              loading={insightsLoading}
               aggregations={aggregations}
+              timeRange={timeRange}
             />
           </Grid>
 

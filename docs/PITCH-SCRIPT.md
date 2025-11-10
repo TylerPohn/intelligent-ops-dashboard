@@ -8,7 +8,7 @@
 
 **Our Solution:** Event-driven AI architecture with production-grade burst tolerance. We use AWS Kinesis for buffered ingestion (2,000 records/sec capacity), batch-process events with Lambda parallelization (20 concurrent executions), and run AI predictions via SageMaker TensorFlow multi-task neural networks. We analyze 46 customer engagement features, generate 5 simultaneous health predictions, and provide actionable interventions—all within 100ms. **Current system handles 500,000× more traffic than we receive.**
 
-**Architecture:** Fully event-driven serverless. Kinesis stream buffers customer events with 24-hour retention, StreamProcessor Lambda batch-writes to DynamoDB (96% fewer write operations), EventBridge triggers AI Lambda every 5 minutes for predictions, SageMaker TensorFlow endpoint generates 5 health scores from 46 features. Dashboard polls aggregated insights via REST API.
+**Architecture:** Fully event-driven serverless. Kinesis stream buffers customer events with 24-hour retention, StreamProcessor Lambda batch-writes to DynamoDB (96% fewer write operations), EventBridge triggers AI Lambda every minute for predictions, SageMaker TensorFlow endpoint generates 5 health scores from 46 features. Dashboard polls aggregated insights via REST API.
 
 **ML Pipeline:** Production SageMaker TensorFlow 2.13 multi-task neural network deployed on ml.t2.medium instance. Single model generates 5 predictions simultaneously from 46 engineered features covering session patterns, engagement metrics, financial behavior, tutor consistency, and temporal trends.
 
@@ -79,7 +79,7 @@
 │  Available headroom: 500,000× current traffic.                  │
 └──────────────────────────────────────────────────────────────────┘
 
-┌──────────────── AI HEALTH PREDICTION (Every 5 min) ─────────────┐
+┌──────────────── AI HEALTH PREDICTION (Every 1 min) ─────────────┐
 │                                                                  │
 │  ┌──────────────────────────────────────────────────┐           │
 │  │   EventBridge Schedule (5-minute intervals)      │           │
@@ -159,7 +159,7 @@
 
 **The key differentiator:** Event-driven architecture with production-grade burst tolerance. Kinesis buffers traffic spikes automatically—we've seen 7.5× bursts and handled them without dropping a single event. The system processes 2,000 records simultaneously through 20 parallel Lambda executions with batch writes to DynamoDB. This reduces costs by 96% compared to individual writes and provides 500,000× headroom for growth.
 
-This entire stack processes customer health predictions every 5 minutes with 46-feature engineering, TensorFlow multi-task inference in 100ms, and costs $52/month."
+This entire stack processes customer health predictions every minute with 46-feature engineering, TensorFlow multi-task inference in 100ms, and costs $52/month."
 
 ### Act 2: Live SageMaker TensorFlow (60 seconds)
 
@@ -226,7 +226,7 @@ cat /tmp/demo-result.json | jq .
 
 **[Switch to Dashboard]**
 
-"Now let's see it in the dashboard. The AI Lambda runs every 5 minutes automatically via EventBridge."
+"Now let's see it in the dashboard. The AI Lambda runs every minute automatically via EventBridge."
 
 **[Watch dashboard show customer health predictions]**
 
@@ -254,7 +254,7 @@ Recommended Actions:
 • Tutor consistency score low - consider tutor reassignment
 ```
 
-"That's end-to-end: customer metrics → 46-feature engineering → TensorFlow multi-task prediction → 5 health scores → actionable segmentation. All in under 100ms, every 5 minutes."
+"That's end-to-end: customer metrics → 46-feature engineering → TensorFlow multi-task prediction → 5 health scores → actionable segmentation. All in under 100ms, every minute."
 
 ### Act 4: Cost & Wrap-Up (30 seconds)
 
@@ -324,12 +324,12 @@ STEP 1: CUSTOMER DATA COLLECTION
   └──────────────────────────────────────────┘
 
 
-STEP 2: AI HEALTH PREDICTION (Every 5 minutes via EventBridge)
+STEP 2: AI HEALTH PREDICTION (Every minute via EventBridge)
 ════════════════════════════════════════════════════════════
 
   ┌──────────────────────────────────────────┐
   │  EventBridge Scheduled Rule              │
-  │  Rate: Every 5 minutes                   │
+  │  Rate: Every minute                   │
   │  Target: AI Lambda Function              │
   └──────────────────────────────────────────┘
          │
@@ -518,7 +518,7 @@ STEP 3: DASHBOARD VISUALIZATION
 └────────────────────────────────────────────────────┘
 
   Customer           DynamoDB            EventBridge
-  Activity  ──────>  Metrics   <──────  (5 min schedule)
+  Activity  ──────>  Metrics   <──────  (1 min schedule)
                        │                       │
                        │                       │
                        │                       ▼
@@ -617,7 +617,7 @@ STEP 3: DASHBOARD VISUALIZATION
 5. **No Vendor Lock-in:** Standard AWS services, portable architecture
 6. **Multi-Task Learning:** Single model, 5 predictions, more efficient than separate models
 7. **Comprehensive Features:** 46 engineered features across 5 categories
-8. **Real-Time Scoring:** Every 5 minutes, catch declining health early
+8. **Real-Time Scoring:** Every minute, catch declining health early
 9. **Cost Efficiency:** 10-100× cheaper than enterprise customer success platforms
 10. **4-Tier Segmentation:** Actionable customer groups (thriving/healthy/at-risk/churned)
 11. **Predictable Pricing:** Flat monthly cost, unlimited predictions
@@ -628,17 +628,17 @@ STEP 3: DASHBOARD VISUALIZATION
 ## Elevator Pitch Variations
 
 ### 15 Second Version
-"Event-driven AI customer health prediction with production-grade burst tolerance. Kinesis handles 500,000× our current traffic, processes 2,000 records/sec through 20 parallel Lambdas. TensorFlow multi-task neural network generates 5 health scores from 46 features every 5 minutes. $52/month flat cost, handles any traffic spike automatically."
+"Event-driven AI customer health prediction with production-grade burst tolerance. Kinesis handles 500,000× our current traffic, processes 2,000 records/sec through 20 parallel Lambdas. TensorFlow multi-task neural network generates 5 health scores from 46 features every minute. $52/month flat cost, handles any traffic spike automatically."
 
 ### 45 Second Version (Technical)
-"Event-driven customer health monitoring with Kinesis stream ingestion and TensorFlow multi-task neural networks. Customer events flow through Kinesis (2,000 records/sec, 24-hour retention) to StreamProcessor Lambda which batch-writes to DynamoDB—96% fewer write operations than individual PutItem calls. We engineer 46 features from customer activity, feed them to a SageMaker TensorFlow endpoint that outputs 5 simultaneous predictions. The system handles 7.5× traffic bursts automatically through parallelization (20 concurrent Lambdas). Customers are segmented into 4 tiers for intervention prioritization. EventBridge triggers predictions every 5 minutes. System costs $52/month with 500,000× traffic headroom. Break-even at one saved customer per year."
+"Event-driven customer health monitoring with Kinesis stream ingestion and TensorFlow multi-task neural networks. Customer events flow through Kinesis (2,000 records/sec, 24-hour retention) to StreamProcessor Lambda which batch-writes to DynamoDB—96% fewer write operations than individual PutItem calls. We engineer 46 features from customer activity, feed them to a SageMaker TensorFlow endpoint that outputs 5 simultaneous predictions. The system handles 7.5× traffic bursts automatically through parallelization (20 concurrent Lambdas). Customers are segmented into 4 tiers for intervention prioritization. EventBridge triggers predictions every minute. System costs $52/month with 500,000× traffic headroom. Break-even at one saved customer per year."
 
 ### 1 Minute Version (Executive)
 "Marketplace platforms lose 5-10% of customers to churn monthly. The cost to replace a customer is 5-25× higher than retaining them. Traditional analytics tell you *after* customers have already left. And when traffic spikes during peak hours or viral events, most systems crash or drop data.
 
 We built an event-driven predictive health monitoring system with production-grade burst tolerance. Customer events flow through Kinesis streams (2,000 records/sec capacity, 24-hour retention) to batch-processing Lambda functions that reduce database writes by 96%. The system automatically handles 7.5× traffic bursts—we've observed them in production—and provides 500,000× headroom for growth. No data loss, ever.
 
-Using production TensorFlow multi-task neural networks on AWS SageMaker, we analyze 46 customer engagement features and generate 5 health predictions every 5 minutes. The system automatically segments customers into 4 tiers—thriving, healthy, at-risk, and churned—enabling targeted interventions.
+Using production TensorFlow multi-task neural networks on AWS SageMaker, we analyze 46 customer engagement features and generate 5 health predictions every minute. The system automatically segments customers into 4 tiers—thriving, healthy, at-risk, and churned—enabling targeted interventions.
 
 The entire event-driven architecture costs $52/month with unlimited predictions and unlimited traffic spikes. At 10,000 customers, that's $0.005 per customer per month.
 
@@ -651,7 +651,7 @@ The architecture is production-grade AWS infrastructure: Kinesis for buffered in
 ## Objection Handling
 
 **"Why not use Gainsight/ChurnZero?"**
-→ "Those cost $500-2,000/month per user and charge per customer. We're 10-40× cheaper with ML-powered predictions. Our TensorFlow model analyzes 46 features every 5 minutes. Most platforms update daily at best."
+→ "Those cost $500-2,000/month per user and charge per customer. We're 10-40× cheaper with ML-powered predictions. Our TensorFlow model analyzes 46 features every minute. Most platforms update daily at best."
 
 **"Can it scale beyond 1,000 customers?"**
 → "Absolutely. Event-driven architecture with Kinesis provides 2,000 records/sec capacity—that's 500,000× our current traffic. The system processes 2,000 records simultaneously through 20 parallel Lambda executions. DynamoDB batch writes handle millions of operations per second. The SageMaker endpoint processes predictions in 100ms. We've observed 7.5× traffic bursts in production and handled them without dropping a single event. The architecture scales to millions of customers with the same $52/month infrastructure cost."
@@ -669,7 +669,7 @@ The architecture is production-grade AWS infrastructure: Kinesis for buffered in
 → "The 46 features are configurable—add your domain-specific metrics. The segmentation thresholds are adjustable for your churn economics. The TensorFlow model can be retrained on your historical data. Everything is infrastructure-as-code for easy modification."
 
 **"What's the ongoing maintenance?"**
-→ "Zero infrastructure maintenance—it's serverless. Update customer metrics in DynamoDB, predictions happen automatically every 5 minutes. No servers to patch, no scaling to manage. Optionally retrain the model quarterly with production data for continuous improvement."
+→ "Zero infrastructure maintenance—it's serverless. Update customer metrics in DynamoDB, predictions happen automatically every minute. No servers to patch, no scaling to manage. Optionally retrain the model quarterly with production data for continuous improvement."
 
 **"How accurate are the predictions?"**
 → "Accuracy improves with your data. The multi-task neural network learns patterns across 46 features and 5 correlated predictions. Even directional accuracy (identifying declining trends) provides value for interventions. Monitor prediction performance in your dashboard and tune thresholds."

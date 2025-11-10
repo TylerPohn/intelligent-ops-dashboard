@@ -19,9 +19,109 @@ BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '100'))
 
 table = dynamodb.Table(TABLE_NAME)
 
-def engineer_features(metrics: Dict[str, Any]) -> np.ndarray:
+def engineer_tutor_features(metrics: Dict[str, Any]) -> np.ndarray:
+    """
+    Engineer 46 tutor-specific features for SageMaker endpoint
+
+    Feature Groups:
+    - Session Performance (13): taught counts, completion rates, gaps
+    - Student Satisfaction (8): ratings, reviews, retention
+    - Availability & Capacity (6): hours, utilization, response time
+    - Subject Expertise (10): diversity, certifications, match accuracy
+    - Financial & Business (9): earnings, pricing, revenue
+    """
+    features = []
+
+    # Session Performance (13 features)
+    sessions_taught_7d = float(metrics.get('sessions_taught_7d', 0))
+    sessions_taught_14d = float(metrics.get('sessions_taught_14d', 0))
+    sessions_taught_30d = float(metrics.get('sessions_taught_30d', 0))
+    sessions_completed_7d = float(metrics.get('sessions_completed_7d', 0))
+    sessions_completed_14d = float(metrics.get('sessions_completed_14d', 0))
+    sessions_completed_30d = float(metrics.get('sessions_completed_30d', 0))
+    avg_session_duration_min = float(metrics.get('avg_session_duration_min', 60))
+    session_completion_rate = float(metrics.get('session_completion_rate', 0.95))
+    no_show_rate = float(metrics.get('no_show_rate', 0))
+    cancellation_rate = float(metrics.get('cancellation_rate', 0))
+    days_since_last_session = float(metrics.get('days_since_last_session', 7))
+    session_frequency_7d = sessions_taught_7d / 7.0
+    session_frequency_14d = sessions_taught_14d / 14.0
+    features.extend([
+        sessions_taught_7d, sessions_taught_14d, sessions_taught_30d,
+        sessions_completed_7d, sessions_completed_14d, sessions_completed_30d,
+        avg_session_duration_min, session_completion_rate,
+        no_show_rate, cancellation_rate, days_since_last_session,
+        session_frequency_7d, session_frequency_14d
+    ])
+
+    # Student Satisfaction (8 features)
+    avg_rating = float(metrics.get('avg_rating', 4.5))
+    rating_trend = float(metrics.get('rating_trend', 0))
+    rating_volatility = float(metrics.get('rating_volatility', 0))
+    positive_reviews_30d = float(metrics.get('positive_reviews_count_30d', 0))
+    negative_reviews_30d = float(metrics.get('negative_reviews_count_30d', 0))
+    student_retention_rate = float(metrics.get('student_retention_rate', 0.7))
+    unique_students_30d = float(metrics.get('unique_students_30d', 10))
+    avg_student_lifetime_sessions = float(metrics.get('avg_student_lifetime_sessions', 5))
+    features.extend([
+        avg_rating, rating_trend, rating_volatility,
+        positive_reviews_30d, negative_reviews_30d, student_retention_rate,
+        unique_students_30d, avg_student_lifetime_sessions
+    ])
+
+    # Availability & Capacity (6 features)
+    available_hours_this_week = float(metrics.get('available_hours_this_week', 20))
+    available_hours_next_week = float(metrics.get('available_hours_next_week', 20))
+    utilization_rate = float(metrics.get('utilization_rate', 0.6))
+    instant_book_enabled = float(metrics.get('instant_book_enabled', 1))
+    avg_response_time_hours = float(metrics.get('avg_response_time_hours', 2))
+    booking_lead_time_avg_hours = float(metrics.get('booking_lead_time_avg_hours', 48))
+    features.extend([
+        available_hours_this_week, available_hours_next_week, utilization_rate,
+        instant_book_enabled, avg_response_time_hours, booking_lead_time_avg_hours
+    ])
+
+    # Subject Expertise (10 features)
+    primary_subject_count = float(metrics.get('primary_subject_count', 1))
+    subject_diversity_score = float(metrics.get('subject_diversity_score', 0.5))
+    avg_rating_by_subject = float(metrics.get('avg_rating_by_subject', 4.5))
+    sessions_per_subject_30d = float(metrics.get('sessions_per_subject_30d', 10))
+    subject_match_accuracy = float(metrics.get('subject_match_accuracy', 0.8))
+    certification_count = float(metrics.get('certification_count', 2))
+    years_of_experience = float(metrics.get('years_of_experience', 3))
+    specialization_score = float(metrics.get('specialization_score', 0.7))
+    advanced_topics_count = float(metrics.get('advanced_topics_count', 1))
+    student_grade_improvement_avg = float(metrics.get('student_grade_improvement_avg', 10))
+    features.extend([
+        primary_subject_count, subject_diversity_score, avg_rating_by_subject,
+        sessions_per_subject_30d, subject_match_accuracy, certification_count,
+        years_of_experience, specialization_score, advanced_topics_count,
+        student_grade_improvement_avg
+    ])
+
+    # Financial & Business (9 features)
+    total_earnings_30d = float(metrics.get('total_earnings_30d', 1000))
+    avg_earnings_per_session = float(metrics.get('avg_earnings_per_session', 50))
+    earnings_trend = float(metrics.get('earnings_trend', 0))
+    premium_tier_sessions_ratio = float(metrics.get('premium_tier_sessions_ratio', 0.3))
+    discount_sessions_ratio = float(metrics.get('discount_sessions_ratio', 0.1))
+    payment_disputes_30d = float(metrics.get('payment_disputes_count_30d', 0))
+    refund_rate_30d = float(metrics.get('refund_rate_30d', 0))
+    pricing_competitiveness_score = float(metrics.get('pricing_competitiveness_score', 0.75))
+    revenue_per_available_hour = float(metrics.get('revenue_per_available_hour', 25))
+    features.extend([
+        total_earnings_30d, avg_earnings_per_session, earnings_trend,
+        premium_tier_sessions_ratio, discount_sessions_ratio, payment_disputes_30d,
+        refund_rate_30d, pricing_competitiveness_score, revenue_per_available_hour
+    ])
+
+    return np.array(features, dtype=np.float32)
+
+def engineer_features(metrics: Dict[str, Any], entity_type: str = 'student') -> np.ndarray:
     """
     Engineer 46 features for TensorFlow multi-task model
+
+    Supports both student and tutor entities with appropriate feature engineering.
 
     Feature Groups:
     - Session features (13): counts, frequencies, gaps
@@ -30,6 +130,9 @@ def engineer_features(metrics: Dict[str, Any]) -> np.ndarray:
     - Behavioral features (10): cancellations, IB calls, responsiveness
     - Tutor features (9): consistency, availability, performance
     """
+    if entity_type == 'tutor':
+        return engineer_tutor_features(metrics)
+
     features = []
 
     # Session counts (3 features)
@@ -170,15 +273,27 @@ def invoke_sagemaker(features: np.ndarray) -> Dict[str, float]:
 
         # Parse TensorFlow response
         result = json.loads(response['Body'].read().decode())
-        predictions = result['predictions'][0]  # TensorFlow format: {"predictions": [[...]]}
+        predictions = result['predictions'][0]  # TensorFlow format: {"predictions": [{...}]}
 
-        return {
-            'first_session_success': float(predictions[0]),
-            'session_velocity': float(predictions[1]),
-            'churn_risk_14d': float(predictions[2]),
-            'churn_risk_30d': float(predictions[3]),
-            'health_score': float(predictions[4]),
-        }
+        # Handle both array and dict response formats
+        if isinstance(predictions, dict):
+            # Dict format: {"health_score": [value], "session_velocity": [value], ...}
+            return {
+                'first_session_success': float(predictions['first_session_success'][0]),
+                'session_velocity': float(predictions['session_velocity'][0]),
+                'churn_risk_14d': float(predictions['churn_risk_14d'][0]),
+                'churn_risk_30d': float(predictions['churn_risk_30d'][0]),
+                'health_score': float(predictions['health_score'][0]),
+            }
+        else:
+            # Array format: [val1, val2, val3, val4, val5]
+            return {
+                'first_session_success': float(predictions[0]),
+                'session_velocity': float(predictions[1]),
+                'churn_risk_14d': float(predictions[2]),
+                'churn_risk_30d': float(predictions[3]),
+                'health_score': float(predictions[4]),
+            }
 
     except Exception as e:
         print(f"Error invoking SageMaker: {e}")
@@ -191,16 +306,36 @@ def invoke_sagemaker(features: np.ndarray) -> Dict[str, float]:
             'health_score': 50.0,
         }
 
-def classify_segment(predictions: Dict[str, float]) -> str:
+def classify_segment(predictions: Dict[str, float], entity_type: str = 'student') -> str:
     """
-    Classify customer segment based on ML predictions
+    Classify entity segment based on ML predictions
 
-    Segments:
+    Student Segments:
     - thriving: Low churn risk (<20%), high health (>80)
     - healthy: Moderate churn (<40%), good health (>60)
     - at_risk: High churn (40-70%), declining health (40-60)
     - churned: Very high churn (>70%) or very low health (<40)
+
+    Tutor Segments (burnout_risk instead of churn_risk):
+    - star: Low burnout (<20%), high health (>80), high availability
+    - healthy: Moderate burnout (<40%), good health (>60)
+    - at_risk: High burnout (40-70%), declining health (40-60)
+    - churning: Very high burnout (>70%) or very low health (<40)
     """
+    if entity_type == 'tutor':
+        burnout = predictions.get('churn_risk_14d', 0)  # Reinterpreted as burnout_risk for tutors
+        health = predictions['health_score']
+
+        if burnout > 0.7 or health < 40:
+            return 'churning'
+        elif burnout > 0.4 or health < 60:
+            return 'at_risk'
+        elif burnout < 0.2 and health > 80:
+            return 'star'
+        else:
+            return 'healthy'
+
+    # Student classification (existing logic)
     churn_14d = predictions['churn_risk_14d']
     churn_30d = predictions['churn_risk_30d']
     health = predictions['health_score']
@@ -214,11 +349,35 @@ def classify_segment(predictions: Dict[str, float]) -> str:
     else:
         return 'healthy'
 
-def generate_recommendations(metrics: Dict[str, Any], predictions: Dict[str, float], segment: str) -> List[str]:
+def generate_recommendations(metrics: Dict[str, Any], predictions: Dict[str, float], segment: str, entity_type: str = 'student') -> List[str]:
     """Generate actionable recommendations based on predictions and metrics"""
     recommendations = []
 
-    # High churn risk recommendations
+    if entity_type == 'tutor':
+        # Tutor-specific recommendations
+        burnout_risk = predictions.get('churn_risk_14d', 0)  # Reinterpreted as burnout for tutors
+
+        if burnout_risk > 0.6:
+            recommendations.append("⚠️ HIGH BURNOUT RISK: Schedule wellness check-in within 48 hours")
+
+        if float(metrics.get('utilization_rate', 0)) > 0.9:
+            recommendations.append("High utilization - suggest reducing hours or adding breaks")
+
+        if float(metrics.get('avg_rating', 5.0)) < 4.0:
+            recommendations.append("Low ratings detected - provide coaching or additional training")
+
+        if predictions['session_velocity'] < 0.5:
+            recommendations.append("Low booking rate - increase visibility or marketing support")
+
+        if float(metrics.get('student_retention_rate', 1.0)) < 0.5:
+            recommendations.append("Low student retention - review teaching style and student feedback")
+
+        if segment == 'star':
+            recommendations.append("✅ Star tutor - consider featuring in marketplace or bonus incentives")
+
+        return recommendations[:5]
+
+    # Student recommendations (existing logic)
     if predictions['churn_risk_14d'] > 0.6:
         recommendations.append("⚠️ HIGH CHURN RISK: Schedule proactive check-in call within 48 hours")
 
@@ -228,27 +387,22 @@ def generate_recommendations(metrics: Dict[str, Any], predictions: Dict[str, flo
         if float(metrics.get('ib_calls_14d', 0)) >= 2:
             recommendations.append("Multiple IB calls detected - assign dedicated account manager")
 
-    # Low engagement recommendations
     if predictions['session_velocity'] < 0.5 and segment != 'churned':
         recommendations.append("Low session frequency - offer scheduling assistance or flexible hours")
 
-    # Payment issues
     if float(metrics.get('payment_success_rate_30d', 1.0)) < 0.9:
         recommendations.append("Payment failures detected - update billing information")
 
-    # Tutor consistency issues
     if float(metrics.get('tutor_consistency_score', 1.0)) < 0.5:
         recommendations.append("Low tutor consistency - assign preferred tutor for better match")
 
-    # First session success
     if predictions['first_session_success'] < 0.5:
         recommendations.append("Low first session success probability - provide onboarding support")
 
-    # Positive signals
     if segment == 'thriving':
         recommendations.append("✅ Thriving customer - consider upsell or referral program")
 
-    return recommendations[:5]  # Return top 5 recommendations
+    return recommendations[:5]
 
 def create_insights_from_predictions(
     entity_id: str,
@@ -264,9 +418,9 @@ def create_insights_from_predictions(
     import random
     import time
 
-    timestamp = datetime.utcnow()
-    timestamp_iso = timestamp.isoformat()
-    ttl = int((timestamp + timedelta(days=30)).timestamp())
+    # Generate base timestamp for TTL calculation
+    base_timestamp = datetime.utcnow()
+    ttl = int((base_timestamp + timedelta(days=30)).timestamp())
 
     insights_to_create = []
 
@@ -362,7 +516,11 @@ def create_insights_from_predictions(
     })
 
     # Write all insights to DynamoDB
-    for insight_data in insights_to_create:
+    for idx, insight_data in enumerate(insights_to_create):
+        # Generate unique timestamp for each insight (spread across 1 second)
+        insight_timestamp = base_timestamp + timedelta(microseconds=idx * 100000)
+        timestamp_iso = insight_timestamp.isoformat()
+
         # Generate unique insight ID
         random_suffix = ''.join(random.choices('0123456789abcdef', k=8))
         insight_id = f"insight_{int(time.time() * 1000)}_{random_suffix}"
@@ -395,20 +553,20 @@ def create_insights_from_predictions(
         except Exception as e:
             print(f"❌ Failed to create {insight_data['prediction_type']} insight for {entity_id}: {e}")
 
-def update_customer_predictions(entity_id: str, entity_type: str, metrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Process single customer and update DynamoDB with predictions"""
+def update_entity_predictions(entity_id: str, entity_type: str, metrics: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Process single entity (student or tutor) and update DynamoDB with predictions"""
     try:
-        # Engineer features
-        features = engineer_features(metrics)
+        # Engineer features based on entity type
+        features = engineer_features(metrics, entity_type)
 
-        # Get ML predictions
+        # Get ML predictions from SageMaker
         predictions = invoke_sagemaker(features)
 
-        # Classify segment
-        segment = classify_segment(predictions)
+        # Classify segment based on entity type
+        segment = classify_segment(predictions, entity_type)
 
-        # Generate recommendations
-        recommendations = generate_recommendations(metrics, predictions, segment)
+        # Generate recommendations based on entity type
+        recommendations = generate_recommendations(metrics, predictions, segment, entity_type)
 
         # Update DynamoDB with predictions
         table.update_item(
@@ -443,7 +601,11 @@ def update_customer_predictions(entity_id: str, entity_type: str, metrics: Dict[
             }
         )
 
-        print(f"✅ Updated predictions for {entity_id}: segment={segment}, churn_14d={predictions['churn_risk_14d']:.2%}, health={predictions['health_score']:.1f}")
+        # Log with entity-type aware messaging
+        if entity_type == 'tutor':
+            print(f"✅ Updated tutor predictions for {entity_id}: segment={segment}, burnout_risk={predictions['churn_risk_14d']:.2%}, health={predictions['health_score']:.1f}")
+        else:
+            print(f"✅ Updated student predictions for {entity_id}: segment={segment}, churn_14d={predictions['churn_risk_14d']:.2%}, health={predictions['health_score']:.1f}")
 
         # Create insight records from predictions
         create_insights_from_predictions(entity_id, predictions, segment, recommendations, metrics)
@@ -533,58 +695,19 @@ def publish_cloudwatch_metrics(results: List[Dict[str, Any]]) -> None:
     except Exception as e:
         print(f"⚠️ Error publishing CloudWatch metrics: {e}")
 
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    Main Lambda handler - processes customer metrics and generates ML predictions
-
-    Triggered by:
-    - EventBridge schedule (every 5 minutes)
-    - Manual invocation for specific customers
-
-    Returns:
-        Summary of processed customers and predictions
-    """
-    print(f"🚀 Starting AI prediction refresh (model: {MODEL_VERSION}, endpoint: {ENDPOINT_NAME})")
-
-    # Check if invoked for specific customer
-    customer_id = event.get('customer_id')
-
-    if customer_id:
-        # Process single customer
-        print(f"Processing single customer: {customer_id}")
-        response = table.get_item(
-            Key={'entity_id': customer_id, 'entity_type': 'student'}
-        )
-
-        if 'Item' not in response:
-            return {
-                'statusCode': 404,
-                'body': json.dumps({'error': f'Customer {customer_id} not found'})
-            }
-
-        result = update_customer_predictions(customer_id, 'student', response['Item'])
-
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'processed': 1,
-                'customer': result
-            }, default=str)
-        }
-
-    # Process all students in batches
-    print(f"Processing all students (batch size: {BATCH_SIZE})")
+def process_entity_type(entity_type: str) -> List[Dict[str, Any]]:
+    """Process all entities of a specific type (student or tutor)"""
+    print(f"Processing all {entity_type}s (batch size: {BATCH_SIZE})")
 
     results = []
     last_evaluated_key = None
-    processed_count = 0
 
     while True:
-        # Query students from DynamoDB
+        # Query entities from DynamoDB
         query_params = {
             'IndexName': 'EntityTypeIndex',
             'KeyConditionExpression': 'entity_type = :type',
-            'ExpressionAttributeValues': {':type': 'student'},
+            'ExpressionAttributeValues': {':type': entity_type},
             'Limit': BATCH_SIZE
         }
 
@@ -595,7 +718,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Process batch
         for item in response['Items']:
-            result = update_customer_predictions(
+            result = update_entity_predictions(
                 item['entity_id'],
                 item['entity_type'],
                 item
@@ -603,32 +726,86 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
             if result:
                 results.append(result)
-                processed_count += 1
 
         # Check if more pages exist
         last_evaluated_key = response.get('LastEvaluatedKey')
         if not last_evaluated_key:
             break
 
+    return results
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Main Lambda handler - processes entity metrics and generates ML predictions
+
+    Triggered by:
+    - EventBridge schedule (every minute)
+    - Manual invocation for specific entities
+
+    Returns:
+        Summary of processed students and tutors with predictions
+    """
+    print(f"🚀 Starting AI prediction refresh (model: {MODEL_VERSION}, endpoint: {ENDPOINT_NAME})")
+
+    # Check if invoked for specific entity
+    entity_id = event.get('entity_id') or event.get('customer_id')
+    entity_type = event.get('entity_type', 'student')
+
+    if entity_id:
+        # Process single entity
+        print(f"Processing single {entity_type}: {entity_id}")
+        response = table.get_item(
+            Key={'entity_id': entity_id, 'entity_type': entity_type}
+        )
+
+        if 'Item' not in response:
+            return {
+                'statusCode': 404,
+                'body': json.dumps({'error': f'{entity_type.capitalize()} {entity_id} not found'})
+            }
+
+        result = update_entity_predictions(entity_id, entity_type, response['Item'])
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'processed': 1,
+                entity_type: result
+            }, default=str)
+        }
+
+    # Process both students and tutors
+    student_results = process_entity_type('student')
+    tutor_results = process_entity_type('tutor')
+
     # Publish aggregated metrics to CloudWatch
-    publish_cloudwatch_metrics(results)
+    publish_cloudwatch_metrics(student_results + tutor_results)
 
     # Summary
     summary = {
         'statusCode': 200,
-        'processed': processed_count,
-        'segments': {
-            'thriving': sum(1 for r in results if r['segment'] == 'thriving'),
-            'healthy': sum(1 for r in results if r['segment'] == 'healthy'),
-            'at_risk': sum(1 for r in results if r['segment'] == 'at_risk'),
-            'churned': sum(1 for r in results if r['segment'] == 'churned'),
+        'students_processed': len(student_results),
+        'tutors_processed': len(tutor_results),
+        'total_processed': len(student_results) + len(tutor_results),
+        'student_segments': {
+            'thriving': sum(1 for r in student_results if r['segment'] == 'thriving'),
+            'healthy': sum(1 for r in student_results if r['segment'] == 'healthy'),
+            'at_risk': sum(1 for r in student_results if r['segment'] == 'at_risk'),
+            'churned': sum(1 for r in student_results if r['segment'] == 'churned'),
+        },
+        'tutor_segments': {
+            'star': sum(1 for r in tutor_results if r['segment'] == 'star'),
+            'healthy': sum(1 for r in tutor_results if r['segment'] == 'healthy'),
+            'at_risk': sum(1 for r in tutor_results if r['segment'] == 'at_risk'),
+            'churning': sum(1 for r in tutor_results if r['segment'] == 'churning'),
         },
         'model_version': MODEL_VERSION,
         'endpoint': ENDPOINT_NAME,
         'timestamp': datetime.utcnow().isoformat()
     }
 
-    print(f"✅ Completed prediction refresh: {processed_count} customers processed")
-    print(f"📊 Segments: {summary['segments']}")
+    print(f"✅ Completed prediction refresh: {len(student_results)} students, {len(tutor_results)} tutors")
+    print(f"📊 Student segments: {summary['student_segments']}")
+    print(f"📊 Tutor segments: {summary['tutor_segments']}")
 
     return summary

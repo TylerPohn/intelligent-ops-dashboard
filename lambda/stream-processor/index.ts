@@ -137,14 +137,51 @@ function validateEvent(event: IncomingEvent): ValidationResult {
 }
 
 /**
+ * Aggregate tutor metrics from session_completed events
+ */
+function aggregateTutorMetrics(payload: Record<string, any>): Record<string, any> | null {
+  const tutorId = payload.tutor_id;
+  if (!tutorId) return null;
+
+  // Initialize tutor metrics structure
+  return {
+    entity_id: tutorId,
+    entity_type: 'tutor',
+    timestamp: new Date().toISOString(),
+
+    // Session performance metrics (will be aggregated over time)
+    sessions_completed_count: 1,
+    session_duration_total_min: payload.duration_minutes || 0,
+    session_rating_sum: payload.rating || 0,
+    session_rating_count: payload.rating ? 1 : 0,
+    cancellation_count: payload.was_cancelled ? 1 : 0,
+    no_show_count: payload.no_show ? 1 : 0,
+
+    // Subject tracking
+    primary_subject: payload.subject,
+    subjects_taught: [payload.subject],
+
+    // Latest session data
+    last_session_timestamp: new Date().toISOString(),
+    last_session_rating: payload.rating || null,
+
+    // Will be enriched by AI Lambda later
+    ttl: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60), // 90 days for tutors
+  };
+}
+
+/**
  * Transform event to DynamoDB item format
  */
-function transformToDynamoDBItem(event: IncomingEvent): Record<string, any> {
+function transformToDynamoDBItem(event: IncomingEvent): Record<string, any>[] {
   const timestamp = event.timestamp || new Date().toISOString();
   const entity_id = event.entity_id || `${event.event_type}-${Date.now()}`;
   const entity_type = event.entity_type || 'event';
 
-  return {
+  const items: Record<string, any>[] = [];
+
+  // Always create the event record
+  items.push({
     entity_id,
     entity_type,
     timestamp,
@@ -153,7 +190,35 @@ function transformToDynamoDBItem(event: IncomingEvent): Record<string, any> {
     metrics: event.metrics || {},
     metadata: event.metadata || {},
     ttl: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60), // 30 days
-  };
+  });
+
+  // For session_completed events, also create/update tutor record
+  if (event.event_type === 'session_completed' && event.payload) {
+    const tutorMetrics = aggregateTutorMetrics(event.payload);
+    if (tutorMetrics) {
+      items.push(tutorMetrics);
+    }
+  }
+
+  // For tutor_availability_updated events, create/update tutor record
+  if (event.event_type === 'tutor_availability_updated' && event.payload) {
+    const tutorId = event.payload.tutor_id;
+    if (tutorId) {
+      items.push({
+        entity_id: tutorId,
+        entity_type: 'tutor',
+        timestamp,
+        available_slots_this_week: event.payload.available_slots_this_week || 0,
+        avg_rating: event.payload.avg_rating || 0,
+        total_sessions_completed: event.payload.total_sessions_completed || 0,
+        subjects: event.payload.subjects || [],
+        instant_book_enabled: event.payload.instant_book_enabled || false,
+        ttl: Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60),
+      });
+    }
+  }
+
+  return items;
 }
 
 /**
@@ -200,12 +265,28 @@ async function notifyMalformedData(
  * Batch write items to DynamoDB with retry logic
  */
 async function batchWriteToDynamoDB(items: Record<string, any>[]): Promise<void> {
+  // Deduplicate items by entity_id + entity_type (primary key)
+  // Keep the LAST occurrence of each duplicate (most recent data)
+  const itemMap = new Map<string, Record<string, any>>();
+
+  for (const item of items) {
+    const key = `${item.entity_id}#${item.entity_type}`;
+    itemMap.set(key, item);
+  }
+
+  const deduplicatedItems = Array.from(itemMap.values());
+  const duplicatesRemoved = items.length - deduplicatedItems.length;
+
+  if (duplicatesRemoved > 0) {
+    console.log(`Removed ${duplicatesRemoved} duplicate items (keeping most recent)`);
+  }
+
   // DynamoDB BatchWriteItem supports max 25 items per request
   const BATCH_SIZE = 25;
   const batches: Record<string, any>[][] = [];
 
-  for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    batches.push(items.slice(i, i + BATCH_SIZE));
+  for (let i = 0; i < deduplicatedItems.length; i += BATCH_SIZE) {
+    batches.push(deduplicatedItems.slice(i, i + BATCH_SIZE));
   }
 
   for (const batch of batches) {
@@ -310,9 +391,9 @@ export async function handler(event: KinesisStreamEvent): Promise<void> {
       const validationResult = validateEvent(incomingEvent);
 
       if (validationResult.isValid) {
-        // Transform to DynamoDB format
-        const item = transformToDynamoDBItem(incomingEvent);
-        validItems.push(item);
+        // Transform to DynamoDB format (may return multiple items for tutor tracking)
+        const items = transformToDynamoDBItem(incomingEvent);
+        validItems.push(...items);
       } else {
         // Track malformed data
         malformedRecords.push({ validation: validationResult, rawData });

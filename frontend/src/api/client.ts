@@ -104,6 +104,68 @@ export const insightsAPI = {
     return response.data;
   },
 
+  // Get ALL insights for a time range (handles pagination automatically)
+  // Limited to 5000 max for performance
+  getAllInTimeRange: async (since?: string, signal?: AbortSignal): Promise<Insight[]> => {
+    const startTime = Date.now();
+    console.log(`🔄 Fetching insights for since=${since}`);
+
+    const allInsights: Insight[] = [];
+    let nextToken: string | undefined = undefined;
+    let pageCount = 0;
+    const maxInsights = 5000; // Hard limit for performance
+    const maxPages = 5; // Only fetch 5 pages max
+
+    do {
+      // Check if request was aborted
+      if (signal?.aborted) {
+        console.log(`⚠️ Request aborted after ${pageCount} pages`);
+        throw new Error('Request aborted');
+      }
+
+      const queryParams = new URLSearchParams();
+      queryParams.append('limit', '1000');
+      if (since) queryParams.append('since', since);
+      if (nextToken) queryParams.append('nextToken', nextToken);
+
+      const response = await apiClient.get(`/insights/recent?${queryParams.toString()}`, { signal });
+      const data: InsightsResponse = response.data;
+
+      // Stop if no items
+      if (data.items.length === 0) {
+        break;
+      }
+
+      allInsights.push(...data.items);
+      nextToken = data.nextToken;
+      pageCount++;
+
+      console.log(`📄 Fetched ${allInsights.length} insights`);
+
+      // Stop if we have enough data
+      if (allInsights.length >= maxInsights) {
+        console.log(`✅ Reached ${maxInsights} insights limit`);
+        break;
+      }
+
+      // Stop if max pages reached
+      if (pageCount >= maxPages) {
+        console.log(`✅ Fetched ${pageCount} pages`);
+        break;
+      }
+
+      // Stop if we got fewer items than requested (end of data)
+      if (data.items.length < 1000) {
+        console.log(`✅ Reached end of data`);
+        break;
+      }
+    } while (nextToken);
+
+    const duration = Date.now() - startTime;
+    console.log(`✅ Done in ${duration}ms: ${allInsights.length} insights`);
+    return allInsights;
+  },
+
   // Get aggregations only (fast, no items)
   getAggregations: async (since?: string): Promise<Aggregations> => {
     const queryParams = since ? `?since=${since}` : '';

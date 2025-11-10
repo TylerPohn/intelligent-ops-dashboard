@@ -32,7 +32,7 @@ function App() {
               letterSpacing: '0.02em',
             }}
           >
-            IOPS Dashboard
+            Intelligent Operations Dashboard
           </Typography>
           <IconButton
             color="inherit"
